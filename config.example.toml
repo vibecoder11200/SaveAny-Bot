@@ -22,6 +22,13 @@ token = ""
 # Recommended: use your own API ID and API HASH (https://my.telegram.org)
 # app_id = 1025907
 # app_hash = "452b0359b988148995f22ff0f4229750"
+# 转发相册(媒体组)的收集等待时间(秒), 计时器会在每个新文件到达时重置;
+# 超时后收集到的所有文件将作为一个批次保存. 未设置时默认为 1 秒.
+# Bot 繁忙时建议调大 (如 10), 否则相册可能被拆分成多个单独任务.
+# Media group (album) collection timeout in seconds; the timer resets on every incoming file.
+# When it expires, all collected files are saved as one batch. Defaults to 1 second if unset.
+# Increase it (e.g. 10) when the bot is busy, otherwise an album may be split into separate tasks.
+media_group_timeout = 10
 [telegram.proxy]
 # 启用代理连接 telegram / Enable proxy for Telegram connection
 enable = false
