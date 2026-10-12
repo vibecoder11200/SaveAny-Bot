@@ -178,3 +178,17 @@ func TestJournalRowKeptOnShutdown(t *testing.T) {
 		t.Fatal("shutdown deleted the journal row; recovery would lose the task")
 	}
 }
+
+func TestJournalRowKeptWhenQueueClosed(t *testing.T) {
+	// Must run after every other test: it closes the shared queue. A task
+	// journaled while the queue is already closed (Ctrl+C racing startup
+	// recovery) must keep its row for the next boot.
+	Close()
+	task := &fakeTask{id: "closed-queue-task", exec: func(context.Context) error { return nil }}
+	if err := AddTask(context.Background(), task); err == nil {
+		t.Fatal("enqueue onto a closed queue should fail")
+	}
+	if !rowExists(t, "closed-queue-task") {
+		t.Fatal("closed-queue enqueue deleted the journal row; shutdown during recovery would lose the task")
+	}
+}

@@ -132,9 +132,13 @@ func AddTask(ctx context.Context, task Executable) error {
 		}
 	}
 	if err := initQueue().Add(queue.NewTask(ctx, task.TaskID(), task.Title(), task)); err != nil {
-		// The task never entered the queue, so its freshly written row must
-		// not survive: it would resurrect a task nobody is running.
-		journal.Complete(ctx, task.TaskID())
+		// A task that never entered the queue must not survive in the
+		// journal — unless the queue is closed because the bot is shutting
+		// down. Shutdown is exactly the moment the row is the recovery data
+		// for the next boot, so keep it and let startup recovery retry.
+		if !errors.Is(err, queue.ErrQueueClosed) {
+			journal.Complete(ctx, task.TaskID())
+		}
 		return err
 	}
 	return nil

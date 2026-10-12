@@ -268,10 +268,11 @@ func recoverRow(ctx context.Context, botCtx *ext.Context, row database.PendingTa
 		task.UserID = row.UserID
 		task.SkipIfExists = true
 		if err := core.AddTask(injectCtx, task); err != nil {
-			// AddTask already removed the journal row (compensation); this
-			// only realistically happens while the queue is shutting down.
-			logger.Errorf("Failed to re-enqueue recovered task: %v", err)
-			return rowDropped, 0, deletedSources
+			// Only realistically fails while the queue is shutting down;
+			// AddTask keeps the row in that case, so treat it like any
+			// other keep-for-next-boot outcome.
+			logger.Warnf("Failed to re-enqueue recovered task, keeping row for the next boot: %v", err)
+			return rowInfraError, 0, deletedSources
 		}
 		stats.TasksRecovered++
 		stats.FilesRecovered += len(elems)
@@ -305,8 +306,8 @@ func recoverRow(ctx context.Context, botCtx *ext.Context, row database.PendingTa
 		task.UserID = row.UserID
 		task.SkipIfExists = true
 		if err := core.AddTask(injectCtx, task); err != nil {
-			logger.Errorf("Failed to re-enqueue recovered task: %v", err)
-			return rowDropped, 0, deletedSources
+			logger.Warnf("Failed to re-enqueue recovered task, keeping row for the next boot: %v", err)
+			return rowInfraError, 0, deletedSources
 		}
 		stats.TasksRecovered++
 		stats.FilesRecovered++

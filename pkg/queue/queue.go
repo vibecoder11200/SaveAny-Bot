@@ -31,7 +31,7 @@ func (tq *TaskQueue[T]) Add(task *Task[T]) error {
 	defer tq.mu.Unlock()
 
 	if tq.closed {
-		return errors.New("queue is closed")
+		return ErrQueueClosed
 	}
 
 	if _, exists := tq.taskMap[task.ID]; exists {
@@ -50,7 +50,8 @@ func (tq *TaskQueue[T]) Add(task *Task[T]) error {
 	return nil
 }
 
-// ErrQueueClosed is returned by Get when the queue is closed and no tasks remain.
+// ErrQueueClosed is returned by Get when the queue is closed and no tasks
+// remain, and by Add when the queue is closed (shutting down).
 var ErrQueueClosed = errors.New("queue is closed and empty")
 
 // Get retrieves and removes the next non-cancelled task from the queue, adding it to the running tasks.
