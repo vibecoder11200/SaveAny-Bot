@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/duke-git/lancet/v2/retry"
 	"github.com/krau/SaveAny-Bot/common/tdler"
+	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
 	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
 	"github.com/krau/SaveAny-Bot/common/utils/ioutil"
 	"github.com/krau/SaveAny-Bot/config"
@@ -293,7 +294,10 @@ func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 		t.notifyStateChange(ctx)
 		return fmt.Errorf("failed to create local file: %w", err)
 	}
+	wdog, wctx := dlutil.NewStallWatchdog(ctx, dlutil.DownloadStallTimeout)
+	defer wdog.Close()
 	wrAt := ioutil.NewProgressWriterAt(localFile, func(n int) {
+		wdog.Kick()
 		t.recordItemDownload(elem.ID, int64(n), time.Now())
 		downloaded := t.downloaded.Add(int64(n))
 		t.notifyProgress(ctx)
@@ -304,11 +308,14 @@ func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 			DownloadedBytes: downloaded,
 		})
 	})
-	_, downloadErr := tdler.NewDownloader(elem.File).Parallel(ctx, wrAt)
+	_, downloadErr := tdler.NewDownloader(elem.File).Parallel(wctx, wrAt)
 	closeErr := localFile.Close()
 	if downloadErr != nil {
 		t.markItemFailed(ctx, elem.ID, FailureStageDownload, downloadErr)
 		t.notifyStateChange(ctx)
+		if wdog.Stalled() {
+			return fmt.Errorf("download stalled: no data received for %s", dlutil.DownloadStallTimeout)
+		}
 		return fmt.Errorf("failed to download file: %w", downloadErr)
 	}
 	if closeErr != nil {
@@ -341,7 +348,10 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 			}
 			return err
 		})
+		streamWdog, streamWctx := dlutil.NewStallWatchdog(uploadCtx, dlutil.DownloadStallTimeout)
+		defer streamWdog.Close()
 		wr := ioutil.NewProgressWriter(pw, func(n int) {
+			streamWdog.Kick()
 			t.recordItemDownload(elem.ID, int64(n), time.Now())
 			downloaded := t.downloaded.Add(int64(n))
 			t.notifyProgress(ctx)
@@ -355,9 +365,13 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 		errg.Go(func() error {
 			defer pw.Close()
 			logger.Info("Starting file download in stream mode")
-			_, err := tdler.NewDownloader(elem.File).Stream(uploadCtx, wr)
+			_, err := tdler.NewDownloader(elem.File).Stream(streamWctx, wr)
 			if err != nil {
-				logger.Errorf("Failed to download file: %v", err)
+				if streamWdog.Stalled() {
+					logger.Errorf("Download stalled: no data received for %s", dlutil.DownloadStallTimeout)
+				} else {
+					logger.Errorf("Failed to download file: %v", err)
+				}
 				t.markItemFailed(uploadCtx, elem.ID, FailureStageDownload, err)
 				t.notifyStateChange(ctx)
 				pw.CloseWithError(err)

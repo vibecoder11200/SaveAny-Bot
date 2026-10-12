@@ -15,12 +15,16 @@ type ProgressWriterAt struct {
 	downloaded *atomic.Int64
 	total      int64
 	info       TaskInfo
+	onWrite    func()
 }
 
 func (w *ProgressWriterAt) WriteAt(p []byte, off int64) (int, error) {
 	at, err := w.wrAt.WriteAt(p, off)
 	if err != nil {
 		return 0, err
+	}
+	if w.onWrite != nil {
+		w.onWrite()
 	}
 	downloaded := w.downloaded.Add(int64(at))
 	if w.progress != nil {
@@ -40,6 +44,7 @@ func newWriterAt(
 	wrAt io.WriterAt,
 	progress ProgressTracker,
 	taskInfo TaskInfo,
+	onWrite func(),
 ) *ProgressWriterAt {
 	return &ProgressWriterAt{
 		ctx:        ctx,
@@ -48,6 +53,7 @@ func newWriterAt(
 		total:      taskInfo.FileSize(),
 		wrAt:       wrAt,
 		info:       taskInfo,
+		onWrite:    onWrite,
 	}
 }
 
@@ -58,12 +64,16 @@ type ProgressWriter struct {
 	downloaded *atomic.Int64
 	total      int64
 	info       TaskInfo
+	onWrite    func()
 }
 
 func (w *ProgressWriter) Write(p []byte) (int, error) {
 	at, err := w.wrAt.Write(p)
 	if err != nil {
 		return 0, err
+	}
+	if w.onWrite != nil {
+		w.onWrite()
 	}
 	downloaded := w.downloaded.Add(int64(at))
 	if w.progress != nil {
@@ -83,6 +93,7 @@ func newWriter(
 	wr io.Writer,
 	progress ProgressTracker,
 	taskInfo TaskInfo,
+	onWrite func(),
 ) *ProgressWriter {
 	return &ProgressWriter{
 		ctx:        ctx,
@@ -91,5 +102,6 @@ func newWriter(
 		total:      taskInfo.FileSize(),
 		wrAt:       wr,
 		info:       taskInfo,
+		onWrite:    onWrite,
 	}
 }

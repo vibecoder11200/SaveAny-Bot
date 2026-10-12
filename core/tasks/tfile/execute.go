@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/duke-git/lancet/v2/retry"
 	"github.com/krau/SaveAny-Bot/common/tdler"
+	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
 	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
 	"github.com/krau/SaveAny-Bot/common/utils/ioutil"
 	"github.com/krau/SaveAny-Bot/config"
@@ -38,15 +39,20 @@ func (t *Task) Execute(ctx context.Context) error {
 			logger.Errorf("Failed to close local file: %v", err)
 		}
 	}()
-	wrAt := newWriterAt(ctx, localFile, t.Progress, t)
+	wdog, wctx := dlutil.NewStallWatchdog(ctx, dlutil.DownloadStallTimeout)
+	defer wdog.Close()
+	wrAt := newWriterAt(wctx, localFile, t.Progress, t, wdog.Kick)
 
 	defer func() {
 		if t.Progress != nil {
 			t.Progress.OnDone(ctx, t, err)
 		}
 	}()
-	_, err = tdler.NewDownloader(t.File).Parallel(ctx, wrAt)
+	_, err = tdler.NewDownloader(t.File).Parallel(wctx, wrAt)
 	if err != nil {
+		if wdog.Stalled() {
+			return fmt.Errorf("download stalled: no data received for %s", dlutil.DownloadStallTimeout)
+		}
 		return fmt.Errorf("failed to download file: %w", err)
 	}
 	logger.Infof("File downloaded successfully")

@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/krau/SaveAny-Bot/common/tdler"
+	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -19,13 +20,19 @@ func executeStream(ctx context.Context, task *Task) error {
 	errg.Go(func() error {
 		return task.Storage.Save(uploadCtx, pr, task.Path)
 	})
-	wr := newWriter(ctx, pw, task.Progress, task)
+	wdog, wctx := dlutil.NewStallWatchdog(uploadCtx, dlutil.DownloadStallTimeout)
+	defer wdog.Close()
+	wr := newWriter(wctx, pw, task.Progress, task, wdog.Kick)
 	errg.Go(func() error {
 		defer pw.Close()
 		logger.Info("Starting file download in stream mode")
-		_, err := tdler.NewDownloader(task.File).Stream(uploadCtx, wr)
+		_, err := tdler.NewDownloader(task.File).Stream(wctx, wr)
 		if err != nil {
-			logger.Errorf("Failed to download file: %v", err)
+			if wdog.Stalled() {
+				logger.Errorf("Download stalled: no data received for %s", dlutil.DownloadStallTimeout)
+			} else {
+				logger.Errorf("Failed to download file: %v", err)
+			}
 			pw.CloseWithError(err)
 		}
 		return err
