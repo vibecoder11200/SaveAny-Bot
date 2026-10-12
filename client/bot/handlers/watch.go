@@ -105,9 +105,15 @@ func handleWatchCmd(ctx *ext.Context, update *ext.Update) error {
 		}
 		if mediaType != "" {
 			// Fail-closed: reject an unknown token now instead of storing a
-			// watch that silently never matches.
-			if _, err := mediautil.ParseMediaFilter(mediaType); err != nil {
+			// watch that silently never matches, and reject a spec that
+			// names no type at all (it would mean "allow everything").
+			parsed, err := mediautil.ParseMediaFilter(mediaType)
+			if err != nil {
 				ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidMediaTypeFilter, map[string]any{"Error": err.Error()})), nil)
+				return dispatcher.EndGroups
+			}
+			if parsed == nil {
+				ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorFilterFormatInvalid)), nil)
 				return dispatcher.EndGroups
 			}
 		}

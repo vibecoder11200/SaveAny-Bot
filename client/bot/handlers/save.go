@@ -104,6 +104,13 @@ func handleBatchSave(ctx *ext.Context, update *ext.Update, args []string) error 
 			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidMediaTypeFilter, map[string]any{"Error": err.Error()})), nil)
 			return dispatcher.EndGroups
 		}
+		if mediaFilter == nil {
+			// A bare "t:" or "t:,,," names no type: an explicit filter
+			// intent that fails closed instead of silently falling back to
+			// the user's default filter.
+			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidMediaTypeFilter, map[string]any{"Error": "no media type given (t: is empty)"})), nil)
+			return dispatcher.EndGroups
+		}
 		if len(args) > 3 {
 			filterStr = args[3]
 		}
