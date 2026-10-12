@@ -33,8 +33,13 @@ type UploadProgressTracker interface {
 }
 
 type Progress struct {
-	MessageID         int
-	ChatID            int64
+	MessageID int
+	ChatID    int64
+	// edits serializes this tracker's message edits through the shared
+	// rate-limited queue, off the transfer goroutine; concurrent tasks each
+	// editing their own message would otherwise exceed Telegram's per-chat
+	// edit budget and trigger long account-level flood waits.
+	edits             *tgutil.ProgressEditQueue
 	start             time.Time
 	lastUpdatePercent atomic.Int32
 	lastUpdateAt      atomic.Int64
@@ -219,11 +224,8 @@ func (p *Progress) editMessage(ctx context.Context, taskID string, message rende
 		return
 	}
 	req := buildSingleEditMessageRequest(p.MessageID, taskID, message, cancellable)
-	if ext := tgutil.ExtFromContext(ctx); ext != nil {
-		if _, err := ext.EditMessage(p.ChatID, req); err != nil {
-			log.FromContext(ctx).Errorf("Failed to edit file progress message: %v", err)
-		}
-	}
+	// The done edit is final; progress edits may be coalesced by the queue.
+	p.edits.Submit(ctx, p.ChatID, req, !cancellable)
 }
 
 func buildSingleEditMessageRequest(messageID int, taskID string, message renderedSingleMessage, cancellable bool) *tg.MessagesEditMessageRequest {
@@ -349,6 +351,7 @@ func NewProgressTrack(
 	p := &Progress{
 		MessageID: messageID,
 		ChatID:    chatID,
+		edits:     tgutil.NewProgressEditQueue(tgutil.SendProgressEdit),
 	}
 	for _, opt := range opts {
 		opt(p)
