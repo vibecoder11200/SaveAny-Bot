@@ -99,6 +99,7 @@ startCreateTask:
 		})
 		return dispatcher.EndGroups
 	}
+	task.UserID = userID
 	if err := core.AddTask(injectCtx, task); err != nil {
 		logger.Errorf("add task failed: %s", err)
 		ctx.EditMessage(userID, &tg.MessagesEditMessageRequest{
@@ -278,6 +279,7 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor st
 	}
 	taskid := xid.New().String()
 	task := batchtfile.NewBatchTGFileTask(taskid, injectCtx, elems, batchtfile.NewProgressTrackerWithSkipped(trackMsgID, userID, skipped), true)
+	task.UserID = userID
 	if err := core.AddTask(injectCtx, task); err != nil {
 		logger.Errorf("Failed to add batch task: %s", err)
 		ctx.EditMessage(userID, &tg.MessagesEditMessageRequest{

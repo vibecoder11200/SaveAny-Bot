@@ -33,6 +33,10 @@ func (g executionGroup) usesBatchSaver() bool {
 	return g.batchSaver != nil
 }
 
+// errSkippedExists marks an element that SkipIfExists found already stored;
+// it is filtered out of the upload pipeline, not treated as a failure.
+var errSkippedExists = errors.New("file already exists")
+
 func (t *Task) Execute(ctx context.Context) error {
 	logger := log.FromContext(ctx).WithPrefix(fmt.Sprintf("batch_file[%s]", t.ID))
 	logger.Info("Starting batch file task")
@@ -181,6 +185,16 @@ func (t *Task) processBatch(ctx context.Context, group executionGroup) error {
 		}
 	}
 	if len(successElems) == 0 {
+		skipped := 0
+		for _, r := range results {
+			if errors.Is(r.err, errSkippedExists) {
+				skipped++
+			}
+		}
+		if skipped > 0 && skipped == len(results) {
+			// Every element already exists (recovery skip): nothing to do.
+			return nil
+		}
 		return fmt.Errorf("all elements failed to download")
 	}
 
@@ -287,6 +301,13 @@ func (t *Task) unmarkProcessing(id string) {
 
 func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 	logger := log.FromContext(ctx).WithPrefix(fmt.Sprintf("file[%s]", elem.File.Name()))
+	if t.SkipIfExists && elem.Storage.Exists(ctx, elem.Path) {
+		// The file is this task's own progress from before the restart.
+		t.markItemCompleted(elem.ID)
+		t.notifyStateChange(ctx)
+		logger.Infof("File already exists, skipping: %s", elem.Path)
+		return errSkippedExists
+	}
 	logger.Info("Starting file download")
 	localFile, err := fsutil.CreateFile(elem.localPath)
 	if err != nil {
@@ -343,6 +364,13 @@ func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 
 func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 	logger := log.FromContext(ctx).WithPrefix(fmt.Sprintf("file[%s]", elem.File.Name()))
+	if t.SkipIfExists && elem.Storage.Exists(ctx, elem.Path) {
+		// The file is this task's own progress from before the restart.
+		t.markItemCompleted(elem.ID)
+		t.notifyStateChange(ctx)
+		logger.Infof("File already exists, skipping: %s", elem.Path)
+		return nil
+	}
 	if elem.stream {
 		pr, pw := io.Pipe()
 		defer pr.Close()

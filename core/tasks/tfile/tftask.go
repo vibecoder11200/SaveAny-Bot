@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/gotd/td/telegram/downloader"
+	userclient "github.com/krau/SaveAny-Bot/client/user"
 	"github.com/krau/SaveAny-Bot/config"
 	"github.com/krau/SaveAny-Bot/core"
 	"github.com/krau/SaveAny-Bot/pkg/enums/tasktype"
+	"github.com/krau/SaveAny-Bot/pkg/journal"
 	"github.com/krau/SaveAny-Bot/pkg/tfile"
 	"github.com/krau/SaveAny-Bot/storage"
 )
@@ -15,14 +18,46 @@ import (
 var _ core.Executable = (*Task)(nil)
 
 type Task struct {
-	ID        string
-	Ctx       context.Context
-	File      tfile.TGFile
-	Storage   storage.Storage
-	Path      string
-	Progress  ProgressTracker
-	stream    bool
-	localPath string
+	ID       string
+	Ctx      context.Context
+	File     tfile.TGFile
+	Storage  storage.Storage
+	Path     string
+	Progress ProgressTracker
+	UserID   int64 // requesting user's chat ID; 0 when created without one (HTTP API)
+	// SkipIfExists makes Execute skip files that already exist in storage,
+	// regardless of the user's conflict strategy. Recovery sets it: an
+	// existing file is this same task's earlier progress, and at boot there
+	// is nobody to ask "overwrite?".
+	SkipIfExists bool
+	stream       bool
+	localPath    string
+}
+
+// JournalPayload implements core's journal source contract: the task is
+// described as fetchable source messages plus resolved destinations, so
+// recovery can rebuild it after a restart.
+func (t *Task) JournalPayload() (int64, journal.TGTaskPayload, bool) {
+	msgFile, ok := t.File.(tfile.TGFileMessage)
+	if !ok {
+		return 0, journal.TGTaskPayload{}, false
+	}
+	ref, ok := journal.NewTGFileRef(msgFile, t.Storage.Name(), t.Path, viaUserbot(t.File.Dler()))
+	if !ok {
+		return 0, journal.TGTaskPayload{}, false
+	}
+	return t.UserID, journal.TGTaskPayload{
+		Files:   []journal.TGFileRef{ref},
+		AsBatch: false,
+	}, true
+}
+
+// viaUserbot reports whether the file was built on the userbot client;
+// recovery must re-fetch with the same account or the source chat may be
+// unreachable (e.g. a PM the bot is not a member of).
+func viaUserbot(dler downloader.Client) bool {
+	uctx := userclient.GetCtx()
+	return uctx != nil && dler == uctx.Raw
 }
 
 // Title implements core.Exectable.

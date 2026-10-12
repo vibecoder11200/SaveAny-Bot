@@ -25,6 +25,18 @@ func (t *Task) Execute(ctx context.Context) error {
 	if t.Progress != nil {
 		t.Progress.OnStart(ctx, t)
 	}
+	if t.SkipIfExists {
+		if t.Storage.Exists(ctx, t.Path) {
+			// The file is this task's own progress from before the restart:
+			// keep it and continue, whatever the configured conflict
+			// strategy would do (rename would create file(1).ext duplicates).
+			logger.Infof("File already exists, skipping: %s", t.Path)
+			if t.Progress != nil {
+				t.Progress.OnDone(ctx, t, nil)
+			}
+			return nil
+		}
+	}
 	if t.stream {
 		return executeStream(ctx, t)
 	}

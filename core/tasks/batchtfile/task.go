@@ -7,10 +7,13 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/gotd/td/telegram/downloader"
+	userclient "github.com/krau/SaveAny-Bot/client/user"
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/config"
 	"github.com/krau/SaveAny-Bot/core"
 	"github.com/krau/SaveAny-Bot/pkg/enums/tasktype"
+	"github.com/krau/SaveAny-Bot/pkg/journal"
 	"github.com/krau/SaveAny-Bot/pkg/tfile"
 	"github.com/krau/SaveAny-Bot/storage"
 	"github.com/rs/xid"
@@ -31,11 +34,16 @@ type TaskElement struct {
 }
 
 type Task struct {
-	ID              string
-	ctx             context.Context
-	elems           []TaskElement
-	Progress        ProgressTracker
-	IgnoreErrors    bool
+	ID           string
+	ctx          context.Context
+	elems        []TaskElement
+	Progress     ProgressTracker
+	IgnoreErrors bool
+	UserID       int64 // requesting user's chat ID; 0 when created without one (HTTP API)
+	// SkipIfExists makes Execute skip elements whose destination file
+	// already exists, regardless of the user's conflict strategy. Recovery
+	// sets it: an existing file is this same task's earlier progress.
+	SkipIfExists    bool
 	downloaded      atomic.Int64
 	totalSize       int64
 	uploadTotalSize atomic.Int64
@@ -56,6 +64,39 @@ func (t *Task) Title() string {
 
 func (t *Task) Type() tasktype.TaskType {
 	return tasktype.TaskTypeTgfiles
+}
+
+// JournalPayload implements core's journal source contract for the whole
+// batch: every element must carry its source message, otherwise the batch
+// cannot be rebuilt after a restart and is not journaled at all.
+func (t *Task) JournalPayload() (int64, journal.TGTaskPayload, bool) {
+	if len(t.elems) == 0 {
+		return 0, journal.TGTaskPayload{}, false
+	}
+	refs := make([]journal.TGFileRef, 0, len(t.elems))
+	for _, elem := range t.elems {
+		msgFile, ok := elem.File.(tfile.TGFileMessage)
+		if !ok {
+			return 0, journal.TGTaskPayload{}, false
+		}
+		ref, ok := journal.NewTGFileRef(msgFile, elem.Storage.Name(), elem.Path, viaUserbot(elem.File.Dler()))
+		if !ok {
+			return 0, journal.TGTaskPayload{}, false
+		}
+		refs = append(refs, ref)
+	}
+	return t.UserID, journal.TGTaskPayload{
+		Files:   refs,
+		AsBatch: true,
+	}, true
+}
+
+// viaUserbot reports whether the file was built on the userbot client;
+// recovery must re-fetch with the same account or the source chat may be
+// unreachable (e.g. a PM the bot is not a member of).
+func viaUserbot(dler downloader.Client) bool {
+	uctx := userclient.GetCtx()
+	return uctx != nil && dler == uctx.Raw
 }
 
 func NewTaskElement(

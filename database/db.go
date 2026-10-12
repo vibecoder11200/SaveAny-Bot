@@ -34,8 +34,16 @@ func Init(ctx context.Context) {
 	if err != nil {
 		logger.Fatal("Failed to open database: ", err)
 	}
+	if sqlDB, err := db.DB(); err != nil {
+		logger.Fatal("Failed to get database handle: ", err)
+	} else {
+		// Single connection: the write volume is tiny, and serializing
+		// access eliminates SQLITE_BUSY contention between concurrent
+		// journal writes and task completions entirely.
+		sqlDB.SetMaxOpenConns(1)
+	}
 	logger.Debug("Database connected")
-	if err := db.AutoMigrate(&User{}, &Dir{}, &Rule{}, &WatchChat{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &Dir{}, &Rule{}, &WatchChat{}, &PendingTask{}); err != nil {
 		logger.Fatal("Database migration failed; if upgrading from an old version, try deleting the database file and retrying", "error", err)
 	}
 	if err := syncUsers(ctx); err != nil {

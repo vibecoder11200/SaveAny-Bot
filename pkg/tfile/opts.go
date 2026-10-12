@@ -12,14 +12,14 @@ func WithMessage(msg *tg.Message) TGFileOption {
 
 func WithName(name string) TGFileOption {
 	return func(f *tgFile) {
-		f.name = name
+		f.name = SanitizeFileName(name)
 	}
 }
 
 func WithNameIfEmpty(name string) TGFileOption {
 	return func(f *tgFile) {
 		if f.name == "" {
-			f.name = name
+			f.name = SanitizeFileName(name)
 		}
 	}
 }

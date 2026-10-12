@@ -31,7 +31,7 @@ type tgFile struct {
 }
 
 func (f *tgFile) SetName(name string) {
-	f.name = name
+	f.name = SanitizeFileName(name)
 }
 
 func (f *tgFile) Location() tg.InputFileLocationClass {
@@ -65,7 +65,7 @@ func NewTGFile(
 		location: location,
 		dler:     dler,
 		size:     size,
-		name:     name,
+		name:     SanitizeFileName(name),
 	}
 	for _, opt := range opts {
 		opt(f)

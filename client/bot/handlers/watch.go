@@ -380,6 +380,7 @@ func listenMediaMessageEvent(ch chan userclient.MediaMessageEvent, botCtx *ext.C
 				logger.Errorf("create task failed: %s", err)
 				continue
 			}
+			task.UserID = user.ChatID
 			if err := core.AddTask(injectCtx, task); err != nil {
 				logger.Errorf("add task failed: %s", err)
 				continue
@@ -475,6 +476,7 @@ func processWatchMediaGroup(ctx *ext.Context, botCtx *ext.Context, user *databas
 				logger.Errorf("create task failed for album file: %s", err)
 				continue
 			}
+			task.UserID = user.ChatID
 			if err := core.AddTask(injectCtx, task); err != nil {
 				logger.Errorf("add task failed: %s", err)
 				continue

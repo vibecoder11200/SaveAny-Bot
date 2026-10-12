@@ -37,6 +37,7 @@ type Config struct {
 	Parser   parserConfig            `toml:"parser" mapstructure:"parser" json:"parser"`
 	Hook     hookConfig              `toml:"hook" mapstructure:"hook" json:"hook"`
 	Ytdlp    YtdlpConfig             `toml:"ytdlp" mapstructure:"ytdlp" json:"ytdlp"`
+	Task     taskConfig              `toml:"task" mapstructure:"task" json:"task"`
 }
 
 type aria2Config struct {
@@ -141,6 +142,8 @@ func Init(ctx context.Context, configFile ...string) error {
 		"ytdlp.max_height":         0,
 		"ytdlp.format":             "",
 		"ytdlp.restrict_filenames": false,
+
+		"task.recovery": true,
 	}
 
 	for key, value := range defaultConfigs {
