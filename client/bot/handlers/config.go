@@ -7,8 +7,10 @@ import (
 
 	"github.com/celestix/gotgproto/dispatcher"
 	"github.com/celestix/gotgproto/ext"
+	"github.com/charmbracelet/log"
 	"github.com/gotd/td/tg"
 	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/conflictutil"
+	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/mediautil"
 	"github.com/krau/SaveAny-Bot/common/i18n"
 	"github.com/krau/SaveAny-Bot/common/i18n/i18nk"
 	"github.com/krau/SaveAny-Bot/config"
@@ -30,6 +32,14 @@ func handleConfigCmd(ctx *ext.Context, update *ext.Update) error {
 						&tg.KeyboardButtonCallback{
 							Text: i18n.T(i18nk.BotMsgConfigButtonConflictStrategy),
 							Data: fmt.Appendf(nil, "%s %s", tcbdata.TypeConfig, "conflictst"),
+						},
+					},
+				},
+				{
+					Buttons: []tg.KeyboardButtonClass{
+						&tg.KeyboardButtonCallback{
+							Text: i18n.T(i18nk.BotMsgConfigButtonMediaFilter),
+							Data: fmt.Appendf(nil, "%s %s", tcbdata.TypeConfig, "mediafilter"),
 						},
 					},
 				},
@@ -58,9 +68,86 @@ func handleConfigCallback(ctx *ext.Context, update *ext.Update) error {
 		return handleConfigFnameSTCallback(ctx, update)
 	case "conflictst":
 		return handleConfigConflictSTCallback(ctx, update)
+	case "mediafilter":
+		return handleConfigMediaFilterCallback(ctx, update)
 	default:
 		return invaildDataAnswer()
 	}
+}
+
+// handleConfigMediaFilterCallback renders the media filter toggle screen and
+// applies taps immediately (stateless flip-on-tap, like the strategy
+// screens). Callback data carries a media type token to toggle; unknown
+// tokens are validated away and never stored.
+func handleConfigMediaFilterCallback(ctx *ext.Context, update *ext.Update) error {
+	userID := update.CallbackQuery.GetUserID()
+	user, err := database.GetUserByChatID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	args := strings.Fields(string(update.CallbackQuery.Data))
+	if len(args) == 3 {
+		token := args[2]
+		switch {
+		case token == "all":
+			user.MediaFilter = ""
+		case mediautil.IsValidMediaTypeToken(token):
+			user.MediaFilter = mediautil.ToggleMediaFilterToken(user.MediaFilter, token)
+		default:
+			log.FromContext(ctx).Warnf("Ignoring invalid media filter token in config callback: %s", token)
+			ctx.AnswerCallback(&tg.MessagesSetBotCallbackAnswerRequest{
+				QueryID:   update.CallbackQuery.GetQueryID(),
+				CacheTime: 5,
+			})
+			return dispatcher.EndGroups
+		}
+		if err := database.UpdateUser(ctx, user); err != nil {
+			return err
+		}
+	}
+
+	var current mediautil.MediaFilter
+	if user.MediaFilter != "" {
+		current, err = mediautil.ParseMediaFilter(user.MediaFilter)
+		if err != nil {
+			current = nil
+		}
+	}
+	accepted := i18n.T(i18nk.BotMsgConfigMediaFilterNone)
+	if len(current) > 0 {
+		accepted = user.MediaFilter
+	}
+	rows := make([]tg.KeyboardButtonRow, 0, len(mediautil.MediaTypeTokens)+1)
+	for _, token := range mediautil.MediaTypeTokens {
+		mark := "⬜️"
+		if current[token] {
+			mark = "✅"
+		}
+		rows = append(rows, tg.KeyboardButtonRow{
+			Buttons: []tg.KeyboardButtonClass{
+				&tg.KeyboardButtonCallback{
+					Text: fmt.Sprintf("%s %s", mark, token),
+					Data: fmt.Appendf(nil, "%s %s %s", tcbdata.TypeConfig, "mediafilter", token),
+				},
+			},
+		})
+	}
+	rows = append(rows, tg.KeyboardButtonRow{
+		Buttons: []tg.KeyboardButtonClass{
+			&tg.KeyboardButtonCallback{
+				Text: i18n.T(i18nk.BotMsgConfigButtonMediaFilterAll),
+				Data: fmt.Appendf(nil, "%s %s all", tcbdata.TypeConfig, "mediafilter"),
+			},
+		},
+	})
+	ctx.EditMessage(userID, &tg.MessagesEditMessageRequest{
+		ID:      update.CallbackQuery.GetMsgID(),
+		Message: i18n.T(i18nk.BotMsgConfigPromptMediaFilter, map[string]any{"Filter": accepted}),
+		ReplyMarkup: &tg.ReplyInlineMarkup{
+			Rows: rows,
+		},
+	})
+	return dispatcher.EndGroups
 }
 
 func handleConfigFnameSTCallback(ctx *ext.Context, update *ext.Update) error {

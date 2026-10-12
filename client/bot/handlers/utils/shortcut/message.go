@@ -86,6 +86,7 @@ func GetFilesFromUpdateLinkMessageWithReplyEdit(ctx *ext.Context, update *ext.Up
 		return nil, nil, nil, dispatcher.EndGroups
 	}
 	files = make([]tfile.TGFileMessage, 0, len(msgLinks))
+	userMediaFilter := mediautil.UserMediaFilter(user)
 	addFile := func(client downloader.Client, msg *tg.Message) {
 		if msg == nil || msg.Media == nil {
 			logger.Warn("message is nil, skipping")
@@ -94,6 +95,9 @@ func GetFilesFromUpdateLinkMessageWithReplyEdit(ctx *ext.Context, update *ext.Up
 		media, ok := msg.GetMedia()
 		if !ok {
 			logger.Debugf("message %d has no media", msg.GetID())
+			return
+		}
+		if !userMediaFilter.Allows(mediautil.MediaType(media)) {
 			return
 		}
 		opts := mediautil.TfileOptions(ctx, user, msg)

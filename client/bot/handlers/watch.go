@@ -64,32 +64,59 @@ func handleWatchCmd(ctx *ext.Context, update *ext.Update) error {
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchInfoAlreadyWatchingChat)), nil)
 		return dispatcher.EndGroups
 	}
+	// Filter syntax: /watch <chat> [msgre:<regex>] [mediatype:<types>]
+	// Each filter occupies its own column; both may be combined.
 	filter := ""
+	mediaType := ""
 	if len(args) > 2 {
-		filterArg := strings.Join(args[2:], " ")
-		filterType, _, _ := strings.Cut(filterArg, ":")
-		filterData := strings.Split(filterArg, ":")[1]
-		if filterType == "" || filterData == "" {
+		rest := make([]string, 0, len(args)-2)
+		for _, arg := range args[2:] {
+			if strings.HasPrefix(arg, "mediatype:") {
+				mediaType = strings.TrimPrefix(arg, "mediatype:")
+				continue
+			}
+			rest = append(rest, arg)
+		}
+		if len(rest) > 0 {
+			filterArg := strings.Join(rest, " ")
+			filterType, _, _ := strings.Cut(filterArg, ":")
+			filterData := strings.Split(filterArg, ":")[1]
+			if filterType == "" || filterData == "" {
+				ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorFilterFormatInvalid)), nil)
+				return dispatcher.EndGroups
+			}
+			switch filterType {
+			case "msgre":
+				_, err := regexp.Compile(filterData)
+				if err != nil {
+					ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidRegex, map[string]any{"Error": err.Error()})), nil)
+					return dispatcher.EndGroups
+				}
+				filter = filterType + ":" + filterData
+			default:
+				ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorFilterTypeUnsupported)), nil)
+				return dispatcher.EndGroups
+			}
+		}
+		if mediaType == "" && len(rest) < len(args)-2 {
+			// A bare "mediatype:" with no data is a malformed filter.
 			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorFilterFormatInvalid)), nil)
 			return dispatcher.EndGroups
 		}
-		switch filterType {
-		case "msgre":
-			_, err := regexp.Compile(filterData)
-			if err != nil {
-				ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidRegex, map[string]any{"Error": err.Error()})), nil)
+		if mediaType != "" {
+			// Fail-closed: reject an unknown token now instead of storing a
+			// watch that silently never matches.
+			if _, err := mediautil.ParseMediaFilter(mediaType); err != nil {
+				ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidMediaTypeFilter, map[string]any{"Error": err.Error()})), nil)
 				return dispatcher.EndGroups
 			}
-			filter = filterType + ":" + filterData
-		default:
-			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorFilterTypeUnsupported)), nil)
-			return dispatcher.EndGroups
 		}
 	}
 	if err := user.WatchChat(ctx, database.WatchChat{
-		UserID: user.ID,
-		ChatID: chatID,
-		Filter: filter,
+		UserID:    user.ID,
+		ChatID:    chatID,
+		Filter:    filter,
+		MediaType: mediaType,
 	}); err != nil {
 		logger.Errorf("Failed to watch chat %d: %s", chatID, err)
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorWatchChatFailed, map[string]any{"Error": err.Error()})), nil)
@@ -121,6 +148,11 @@ func handleLswatchCmd(ctx *ext.Context, update *ext.Update) error {
 		if chat.Filter != "" {
 			sb.WriteString(i18n.T(i18nk.BotMsgWatchInfoWatchListFilterPrefix))
 			sb.WriteString(chat.Filter)
+			sb.WriteString(")")
+		}
+		if chat.MediaType != "" {
+			sb.WriteString(i18n.T(i18nk.BotMsgWatchInfoWatchListMediatypePrefix))
+			sb.WriteString(chat.MediaType)
 			sb.WriteString(")")
 		}
 		sb.WriteString("\n")
@@ -221,6 +253,21 @@ func listenMediaMessageEvent(ch chan userclient.MediaMessageEvent, botCtx *ext.C
 		}
 		msgText := event.File.Message().GetMessage()
 		for _, chat := range chats {
+			// Media type check comes first: a filtered-out type never reaches
+			// the caption regex.
+			if chat.MediaType != "" {
+				mediaFilter, err := mediautil.ParseMediaFilter(chat.MediaType)
+				if err != nil {
+					// Stored values are validated at watch creation; a parse
+					// failure here means corrupt data — match nothing rather
+					// than silently saving everything.
+					logger.Errorf("Invalid stored mediatype filter in chat %d, skipping: %v", chat.ChatID, err)
+					continue
+				}
+				if !mediaFilter.Allows(mediautil.MediaType(event.File.Message().Media)) {
+					continue
+				}
+			}
 			if chat.Filter != "" {
 				filter := strings.Split(chat.Filter, ":")
 				if len(filter) != 2 {
@@ -245,6 +292,12 @@ func listenMediaMessageEvent(ch chan userclient.MediaMessageEvent, botCtx *ext.C
 			if err != nil {
 				logger.Errorf("Failed to get user by ID %d: %v", chat.UserID, err)
 				continue
+			}
+			// No per-chat media type: fall back to the user's default filter.
+			if chat.MediaType == "" {
+				if !mediautil.UserMediaFilter(user).Allows(mediautil.MediaType(event.File.Message().Media)) {
+					continue
+				}
 			}
 			if user.DefaultStorage == "" {
 				logger.Warnf("User %d has no default storage set, skipping media message handling", chat.UserID)
