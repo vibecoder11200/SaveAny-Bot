@@ -17,9 +17,20 @@ func NewDefaultMiddlewares(ctx context.Context, timeout time.Duration) []telegra
 	return []telegram.Middleware{
 		recovery.New(ctx, func() backoff.BackOff { return newBackoff(timeout) }),
 		retry.New(config.C().Telegram.RpcRetry),
-		floodwait.NewSimpleWaiter(),
+		// By default SimpleWaiter retries flood waits forever and silently,
+		// which turns a long account-level FLOOD_WAIT (hours) into an
+		// unexplainable hang. Give up instead: bounded retries, and any
+		// single wait longer than maxFloodWait surfaces as an error.
+		floodwait.NewSimpleWaiter().
+			WithMaxRetries(maxFloodWaitRetries).
+			WithMaxWait(maxFloodWait),
 	}
 }
+
+const (
+	maxFloodWaitRetries = 3
+	maxFloodWait        = 5 * time.Minute
+)
 
 func newBackoff(timeout time.Duration) backoff.BackOff {
 	b := backoff.NewExponentialBackOff()
