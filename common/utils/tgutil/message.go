@@ -112,6 +112,80 @@ func InputMessageClassSliceFromInt(ids []int) []tg.InputMessageClass {
 	return result
 }
 
+// GetMessagesByIDs fetches exactly the given messages of a chat, in chunks,
+// without expanding any range (unlike GetMessagesRange, which issues one
+// request per integer between min and max). The returned map holds only the
+// messages that actually exist: an ID missing from the map means the source
+// was deleted or is inaccessible. A transport-level failure (network, flood)
+// aborts with an error.
+func GetMessagesByIDs(ctx *ext.Context, chatID int64, ids []int) (map[int]*tg.Message, error) {
+	unique := make([]int, 0, len(ids))
+	seen := make(map[int]struct{}, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	sort.Ints(unique)
+
+	fetch := func(peerID int64) (map[int]*tg.Message, error) {
+		result := make(map[int]*tg.Message, len(unique))
+		for _, chunk := range slice.Chunk(unique, 100) {
+			msgs, err := ctx.GetMessages(peerID, InputMessageClassSliceFromInt(chunk))
+			if err != nil {
+				return nil, err
+			}
+			for _, msg := range msgs {
+				if msg == nil {
+					continue
+				}
+				tgm, ok := msg.(*tg.Message)
+				if !ok {
+					// MessageEmpty and friends: the source no longer exists.
+					continue
+				}
+				result[tgm.GetID()] = tgm
+			}
+		}
+		return result, nil
+	}
+
+	var lastErr error
+	if result, err := fetch(chatID); err == nil {
+		return result, nil
+	} else {
+		lastErr = err
+	}
+	// We don't know what the input chatID is bot api style or plain tdlib
+	// style; retry the peer-ID variants like GetMessageByID.
+	in := constant.TDLibPeerID(chatID)
+	plain := in.ToPlain()
+	var channel constant.TDLibPeerID
+	channel.Channel(plain)
+	if result, err := fetch(int64(channel)); err == nil {
+		return result, nil
+	} else {
+		lastErr = err
+	}
+	var chat constant.TDLibPeerID
+	chat.Chat(plain)
+	if result, err := fetch(int64(chat)); err == nil {
+		return result, nil
+	} else {
+		lastErr = err
+	}
+	var userID constant.TDLibPeerID
+	userID.User(plain)
+	if result, err := fetch(int64(userID)); err == nil {
+		return result, nil
+	} else {
+		lastErr = err
+	}
+	return nil, fmt.Errorf("failed to get messages by IDs for chat %d: %w", chatID, lastErr)
+}
+
 func GetMessagesRange(ctx *ext.Context, chatID int64, minId, maxId int) (msg []*tg.Message, err error) {
 	if msg, err = getMessagesRange(ctx, chatID, minId, maxId); err == nil {
 		return

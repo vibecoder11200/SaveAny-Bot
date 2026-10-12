@@ -59,6 +59,13 @@ func Run(cmd *cobra.Command, _ []string) {
 		cancel()
 	}()
 
+	// Recover tasks that were in flight during the last stop. Runs in its
+	// own goroutine after the bot client is ready; a no-op without pending
+	// journal rows.
+	if ectx := bot.ExtContext(); ectx != nil {
+		go bot.RunRecovery(ctx, ectx)
+	}
+
 	core.Run(ctx)
 
 	<-ctx.Done()
