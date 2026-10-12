@@ -76,25 +76,34 @@ bot:
       2. After setting default storage, send /save <channel_id/username> <message_id_range> to batch save files. Rules will be applied; if no rule matches, default storage will be used.
       Example:
       /save @acherkrau 114-514
+
+      3. Batch saving supports an optional media type filter and an optional caption regex:
+      /save <channel_id/username> <message_id_range> [t:types] [regex]
+      Example:
+      /save @acherkrau 114-514 t:video,photo
+      Valid types: photo, video, animation, audio, voice, sticker, document (aliases: gif, music, vid, img, doc).
+      When t: is omitted, your default media filter set via /config applies.
     watch_help_text: |
       Use /watch to watch messages in a chat and automatically save them to the default storage, following storage rules.
 
       Syntax:
-      /watch <chat_id> [filter]
+      /watch <chat_id> [msgre:<regex>] [mediatype:<types>]
 
       Parameters:
       - <chat_id>: Chat ID or username
-      - [filter]: Optional, format is filter_type:expression , see docs for all supported filters
+      - [msgre:<regex>]: Optional, only save messages whose caption matches the regex
+      - [mediatype:<types>]: Optional, comma-separated media types to accept, e.g. mediatype:photo,audio; when omitted your default media filter (set via /config) applies
 
       Example:
-      /watch -1002229835658 msgre:.*plana.*
+      /watch -1002229835658 msgre:.*plana.* mediatype:video
 
-      This will watch chat with ID -1002229835658 and save all media messages containing "plana".
+      This will watch chat with ID -1002229835658 and save video messages containing "plana".
 
       Notifications for saved messages are off by default, toggle them with /watch notify on|off.
     common:
       cancel_button_text: "Cancel"
       error_invalid_regex: "Invalid regex: {{.Error}}"
+      error_invalid_media_type_filter: "Invalid media type filter: {{.Error}}"
       error_invalid_msg_id_range: "Invalid message ID range: {{.Error}}"
       error_invalid_id_or_username: "Invalid ID or username: {{.Error}}"
       error_get_messages_failed: "Failed to get messages: {{.Error}}"
@@ -154,6 +163,7 @@ bot:
       info_watch_list_empty: "No chats are being watched currently"
       info_watch_list_header: "Currently watched chats:\n"
       info_watch_list_filter_prefix: " (filter: "
+      info_watch_list_mediatype_prefix: " (mediatype: "
       error_unwatch_no_chat_provided: "Please provide a chat ID or username to unwatch"
       error_unwatch_chat_failed: "Failed to unwatch chat: {{.Error}}"
       info_watch_chat_stopped: "Stopped watching chat: {{.Chat}}"
@@ -161,6 +171,16 @@ bot:
       info_notify_enabled: "Task notifications are enabled for every chat you watch: each saved message and its result is reported here.\n\nUsage: /watch notify on|off"
       info_notify_disabled: "Task notifications are disabled for every chat you watch.\n\nUsage: /watch notify on|off"
       notify_detected: "<b>🔔 Watched message detected</b>\n<code>{{.Name}}</code>\nProgress will be reported here."
+    recovery:
+      info_task_recovered: "♻️ Recovering an unfinished task from the last restart..."
+      info_summary: |-
+        ♻️ Task recovery finished
+
+        Tasks recovered: {{.TasksRecovered}}
+        Files recovered: {{.FilesRecovered}}{{if .Deleted}}
+        Source files deleted: {{.Deleted}}{{end}}{{if .StorageFailed}}
+        Tasks dropped (storage unavailable): {{.StorageFailed}}{{end}}{{if .ClientUnavailable}}
+        Tasks dropped (client unavailable): {{.ClientUnavailable}}{{end}}
     tasks:
       usage_cancel: "Usage: /tasks cancel <task_id>"
       usage: "Usage: /tasks [running|queued|cancel <task_id>]"
@@ -285,6 +305,10 @@ bot:
       prompt_select_option: "Please select an option to configure"
       button_filename_strategy: "Filename strategy"
       button_conflict_strategy: "Duplicate file strategy"
+      button_media_filter: "Media filter"
+      button_media_filter_all: "All (clear filter)"
+      prompt_media_filter: "Tap a media type to toggle whether messages of that type are saved (✅ = accepted). Applies to watch (when the chat has no mediatype filter), /save batch and message links.\nAccepted types: {{.Filter}}"
+      media_filter_none: "all types"
       error_invalid_callback_data: "Invalid callback data"
       error_invalid_template: "Invalid template, please check syntax\n{{.Error}}"
       info_filename_strategy_set: "Filename strategy set to: {{.Strategy}}"
