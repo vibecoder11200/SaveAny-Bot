@@ -41,17 +41,24 @@ func (t *Task) Execute(ctx context.Context) error {
 	}()
 	wdog, wctx := dlutil.NewStallWatchdog(ctx, dlutil.DownloadStallTimeout)
 	defer wdog.Close()
-	wrAt := newWriterAt(wctx, localFile, t.Progress, t, wdog.Kick)
+	dlCtx, dlCancel := context.WithCancel(wctx)
+	defer dlCancel()
+	meter := dlutil.NewFloodWaitMeter(dlCtx, dlCancel)
+	defer meter.Close()
+	wrAt := newWriterAt(dlCtx, localFile, t.Progress, t, wdog.Kick)
 
 	defer func() {
 		if t.Progress != nil {
 			t.Progress.OnDone(ctx, t, err)
 		}
 	}()
-	_, err = tdler.NewDownloader(t.File).Parallel(wctx, wrAt)
+	_, err = tdler.NewDownloaderWithMeter(t.File, meter).Parallel(dlCtx, wrAt)
 	if err != nil {
 		if wdog.Stalled() {
 			return fmt.Errorf("download stalled: no data received for %s", dlutil.DownloadStallTimeout)
+		}
+		if meter.Crawled() {
+			return dlutil.CrawlError(meter.Absorbed())
 		}
 		return fmt.Errorf("failed to download file: %w", err)
 	}

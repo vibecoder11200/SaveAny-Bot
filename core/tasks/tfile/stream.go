@@ -22,17 +22,24 @@ func executeStream(ctx context.Context, task *Task) error {
 	})
 	wdog, wctx := dlutil.NewStallWatchdog(uploadCtx, dlutil.DownloadStallTimeout)
 	defer wdog.Close()
-	wr := newWriter(wctx, pw, task.Progress, task, wdog.Kick)
+	dlCtx, dlCancel := context.WithCancel(wctx)
+	defer dlCancel()
+	meter := dlutil.NewFloodWaitMeter(dlCtx, dlCancel)
+	defer meter.Close()
+	wr := newWriter(dlCtx, pw, task.Progress, task, wdog.Kick)
 	errg.Go(func() error {
 		defer pw.Close()
 		logger.Info("Starting file download in stream mode")
-		_, err := tdler.NewDownloader(task.File).Stream(wctx, wr)
+		_, err := tdler.NewDownloaderWithMeter(task.File, meter).Stream(dlCtx, wr)
 		if err != nil {
 			if wdog.Stalled() {
-				logger.Errorf("Download stalled: no data received for %s", dlutil.DownloadStallTimeout)
+				err = fmt.Errorf("download stalled: no data received for %s", dlutil.DownloadStallTimeout)
+			} else if meter.Crawled() {
+				err = dlutil.CrawlError(meter.Absorbed())
 			} else {
-				logger.Errorf("Failed to download file: %v", err)
+				err = fmt.Errorf("failed to download file: %w", err)
 			}
+			logger.Errorf("%v", err)
 			pw.CloseWithError(err)
 		}
 		return err
