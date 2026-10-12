@@ -9,10 +9,11 @@ SaveAny-Bot lets you customize how saved files are named and how collisions with
 
 ## `/config` — User Configuration
 
-The `/config` command opens an inline menu where you can change two per-user settings:
+The `/config` command opens an inline menu where you can change three per-user settings:
 
 - **Filename strategy** — how the saved file is named
 - **Duplicate file strategy** — what happens when a file with the same name already exists in the target storage
+- **Media filter** — which media types are saved automatically
 
 Settings are stored per user and apply to all of that user's subsequent save/transfer tasks.
 
@@ -36,6 +37,12 @@ Settings are stored per user and apply to all of that user's subsequent save/tra
 {{< hint info >}}
 The conflict strategy only kicks in for storage backends that can detect the existence of a file. Backends that do not support existence checks will fall back to overwriting.
 {{< /hint >}}
+
+### Media filter
+
+Tap a media type in the `/config` "Media filter" screen to toggle whether it is accepted (✅ = accepted). The setting applies to watched chats without their own `mediatype:` filter, `/save` batch saving without an explicit `t:` argument, and Telegram message-link saving. An empty filter (tap "All") accepts every type.
+
+Valid types: `photo`, `video`, `animation`, `audio`, `voice`, `sticker`, `document`.
 
 ## `/fnametmpl` — Custom Filename Template
 

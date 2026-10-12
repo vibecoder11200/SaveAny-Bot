@@ -136,6 +136,15 @@ filename_template = "%(title)s.%(ext)s"  # 例如 "%(uploader)s - %(title)s.%(ex
 restrict_filenames = false
 ```
 
+### 任务配置
+
+```toml
+[task]
+recovery = true
+```
+
+- `recovery`: 开启时 (默认开启), Bot 停止时仍在进行的 TG 文件任务会在下次启动时自动重新排队. 已保存过的文件不会被重复下载 (无论重名策略如何), 源消息已被删除的任务会被报告, 被 `/cancel` 取消的任务不会复活. 超过 48 小时的记录会被丢弃而不是恢复.
+
 ### HTTP API 配置
 
 启用后, SaveAny-Bot 会暴露一套 HTTP API, 用于以编程方式创建/查询/取消任务. 完整的接口说明见 [HTTP API](../../usage/api).

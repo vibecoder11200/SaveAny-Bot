@@ -14,7 +14,7 @@ weight: 4
 监听聊天:
 
 ```
-/watch <chat_id/username> [filter] 
+/watch <chat_id/username> [msgre:<正则>] [mediatype:<类型>]
 ```
 
 取消监听:
@@ -34,6 +34,28 @@ weight: 4
 ```
 
 这将会监听 ID 为 12345678 的聊天, 并且只保存消息文本中包含 "hello" 的消息.
+
+## mediatype
+
+逗号分隔的媒体类型列表, 只保存这些类型的消息, 例如:
+
+```
+/watch 12345678 mediatype:photo,audio
+```
+
+这将监听该聊天, 并且只保存图片和音频文件. 有效类型: `photo`, `video`, `animation`, `audio`, `voice`, `sticker`, `document` (别名: `gif`, `music`, `vid`, `img`, `doc`).
+
+两种过滤器可以组合使用, 且媒体类型检查先于正则执行:
+
+```
+/watch 12345678 msgre:.*hello.* mediatype:video
+```
+
+监听未设置 `mediatype:` 时, 将应用用户在 `/config` 中设置的默认媒体过滤器.
+
+{{< hint warning >}}
+创建监听时, 未知的媒体类型会被立即拒绝 — 不会创建一个永远不会匹配的过滤器.
+{{< /hint >}}
 
 ## 任务通知
 

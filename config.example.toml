@@ -70,6 +70,12 @@ filename_template = "%(title)s.%(ext)s"
 # Restrict file names to ASCII characters (yt-dlp --restrict-filenames): drops non-latin characters, spaces and & from titles
 restrict_filenames = false
 
+# 任务配置 / Task configuration
+[task]
+# 重启后自动恢复未完成的 TG 文件任务 / Recover unfinished TG-file tasks after a restart
+# recovery = false
+recovery = true
+
 # 解析器配置 / Parser configuration
 [parser]
 # 启用 JS 解析器插件 (Go 内置解析器默认启用)

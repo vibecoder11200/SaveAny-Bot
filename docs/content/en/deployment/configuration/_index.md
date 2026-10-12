@@ -136,6 +136,15 @@ filename_template = "%(title)s.%(ext)s"  # e.g. "%(uploader)s - %(title)s.%(ext)
 restrict_filenames = false
 ```
 
+### Task Configuration
+
+```toml
+[task]
+recovery = true
+```
+
+- `recovery`: When enabled (default), TG-file tasks that were still in flight when the bot stopped are re-enqueued on the next start. Tasks already stored are not downloaded again (regardless of your duplicate-file strategy), tasks whose sources were deleted are reported, and `/cancel`-ed tasks never come back. Rows older than 48 hours are dropped instead of recovered.
+
 ### HTTP API Configuration
 
 When enabled, SaveAny-Bot exposes an HTTP API for creating/querying/canceling tasks programmatically. See [HTTP API](../../usage/api) for the full endpoint reference.

@@ -14,7 +14,7 @@ You can watch messages in a specific chat and automatically save them to the def
 Watch a chat:
 
 ```
-/watch <chat_id/username> [filter]
+/watch <chat_id/username> [msgre:<regex>] [mediatype:<types>]
 ```
 
 Stop watching:
@@ -34,6 +34,28 @@ Regex-match the message text. For example:
 ```
 
 This will watch the chat with ID `12345678`, and only save messages whose text contains `hello`.
+
+## mediatype
+
+Comma-separated list of media types to accept. For example:
+
+```
+/watch 12345678 mediatype:photo,audio
+```
+
+This will watch the chat and only save photos and audio files. Valid types: `photo`, `video`, `animation`, `audio`, `voice`, `sticker`, `document` (aliases: `gif`, `music`, `vid`, `img`, `doc`).
+
+Both filters can be combined, and the media type check runs before the regex:
+
+```
+/watch 12345678 msgre:.*hello.* mediatype:video
+```
+
+When a watch has no `mediatype:` filter, the user's default media filter (set via `/config`) applies.
+
+{{< hint warning >}}
+An unknown media type is rejected immediately when creating the watch — the watch is not created with a filter that would never match.
+{{< /hint >}}
 
 ## Task notifications
 
