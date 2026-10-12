@@ -123,7 +123,7 @@ func recoverUserRows(ctx context.Context, botCtx *ext.Context, userID int64, row
 				journal.BumpAttempts(ctx, rest.ID)
 			}
 			logger.Warnf("Fetch failed (infrastructure), %d task(s) kept for the next boot", len(rows)-i)
-			sendRecoverySummary(ctx, botCtx, userID, recTasks, recFiles, deleted, storageFailed, clientUnavailbl)
+			sendRecoverySummary(ctx, botCtx, userID, recTasks, recFiles, deleted+rowDeleted, storageFailed, clientUnavailbl)
 			return
 		}
 		deleted += rowDeleted

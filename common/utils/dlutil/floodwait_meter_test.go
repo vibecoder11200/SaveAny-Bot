@@ -72,7 +72,10 @@ func TestFloodWaitMeter_WindowsAreIndependent(t *testing.T) {
 	// total across windows would cross the budget.
 	m.Observe(50*time.Millisecond, nil)
 	m.Observe(40*time.Millisecond, nil) // 90ms < maxSlow
-	time.Sleep(testWindow + 20*time.Millisecond)
+	// Two full windows: the window tick must have fired (resetting the
+	// accumulator) before the next observation, regardless of scheduler
+	// delays on loaded CI runners.
+	time.Sleep(2 * testWindow)
 	m.Observe(90*time.Millisecond, nil) // would push the raw total over maxSlow
 	time.Sleep(testWindow + 20*time.Millisecond)
 	select {

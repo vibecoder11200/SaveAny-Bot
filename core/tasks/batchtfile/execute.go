@@ -195,6 +195,9 @@ func (t *Task) processBatch(ctx context.Context, group executionGroup) error {
 			// Every element already exists (recovery skip): nothing to do.
 			return nil
 		}
+		if skipped > 0 {
+			return fmt.Errorf("%d element(s) failed to download (%d skipped as already existing)", len(results)-skipped, skipped)
+		}
 		return fmt.Errorf("all elements failed to download")
 	}
 
