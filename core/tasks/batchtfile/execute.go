@@ -20,6 +20,7 @@ import (
 	"github.com/krau/SaveAny-Bot/pkg/enums/ctxkey"
 	"github.com/krau/SaveAny-Bot/pkg/storagetypes"
 	"github.com/krau/SaveAny-Bot/pkg/taskevent"
+	"github.com/krau/SaveAny-Bot/pkg/tfile"
 	"github.com/krau/SaveAny-Bot/storage"
 	"golang.org/x/sync/errgroup"
 )
@@ -302,6 +303,27 @@ func (t *Task) unmarkProcessing(id string) {
 	t.processingMu.Unlock()
 }
 
+// refreshElemFile swaps in a fresh file_reference for an element about to
+// download. Batch elements can wait hours in line while Telegram file
+// references live only ~2 hours, so the location stored at task creation is
+// stale by the time the element's turn comes. A vanished source fails the
+// element (the returned error); any other error falls back to the stored
+// location — the FRE retry inside DownloadParallelWithRefresh still recovers
+// the element if that location gets rejected.
+func (t *Task) refreshElemFile(ctx context.Context, logger *log.Logger, elem *TaskElement) error {
+	msgFile, ok := elem.File.(tfile.TGFileMessage)
+	if !ok || msgFile.Message() == nil {
+		return nil
+	}
+	if err := tdler.RefreshFileLocation(ctx, msgFile); err != nil {
+		if errors.Is(err, tdler.ErrSourceGone) {
+			return err
+		}
+		logger.Warnf("File reference refresh failed, trying the stored location: %v", err)
+	}
+	return nil
+}
+
 func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 	logger := log.FromContext(ctx).WithPrefix(fmt.Sprintf("file[%s]", elem.File.Name()))
 	if t.SkipIfExists && elem.Storage.Exists(ctx, elem.Path) {
@@ -310,6 +332,11 @@ func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 		t.notifyStateChange(ctx)
 		logger.Infof("File already exists, skipping: %s", elem.Path)
 		return errSkippedExists
+	}
+	if err := t.refreshElemFile(ctx, logger, elem); err != nil {
+		t.markItemFailed(ctx, elem.ID, FailureStageDownload, err)
+		t.notifyStateChange(ctx)
+		return fmt.Errorf("failed to download file: %w", err)
 	}
 	logger.Info("Starting file download")
 	localFile, err := fsutil.CreateFile(elem.localPath)
@@ -336,7 +363,7 @@ func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 			DownloadedBytes: downloaded,
 		})
 	})
-	_, downloadErr := tdler.NewDownloaderWithMeter(elem.File, meter).Parallel(dlCtx, wrAt)
+	downloadErr := tdler.DownloadParallelWithRefresh(ctx, elem.File, meter, dlCtx, wrAt)
 	closeErr := localFile.Close()
 	if downloadErr != nil {
 		t.markItemFailed(ctx, elem.ID, FailureStageDownload, downloadErr)
@@ -373,6 +400,11 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 		t.notifyStateChange(ctx)
 		logger.Infof("File already exists, skipping: %s", elem.Path)
 		return nil
+	}
+	if err := t.refreshElemFile(ctx, logger, &elem); err != nil {
+		t.markItemFailed(ctx, elem.ID, FailureStageDownload, err)
+		t.notifyStateChange(ctx)
+		return fmt.Errorf("failed to download file: %w", err)
 	}
 	if elem.stream {
 		pr, pw := io.Pipe()
@@ -464,7 +496,7 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 			DownloadedBytes: downloaded,
 		})
 	})
-	_, err = tdler.NewDownloaderWithMeter(elem.File, meter).Parallel(dlCtx, wrAt)
+	err = tdler.DownloadParallelWithRefresh(ctx, elem.File, meter, dlCtx, wrAt)
 	if err != nil {
 		t.markItemFailed(ctx, elem.ID, FailureStageDownload, err)
 		t.notifyStateChange(ctx)

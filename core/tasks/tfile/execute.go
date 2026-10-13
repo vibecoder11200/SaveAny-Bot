@@ -64,7 +64,7 @@ func (t *Task) Execute(ctx context.Context) error {
 			t.Progress.OnDone(ctx, t, err)
 		}
 	}()
-	_, err = tdler.NewDownloaderWithMeter(t.File, meter).Parallel(dlCtx, wrAt)
+	err = tdler.DownloadParallelWithRefresh(ctx, t.File, meter, dlCtx, wrAt)
 	if err != nil {
 		if wdog.Stalled() {
 			return fmt.Errorf("download stalled: no data received for %s", dlutil.DownloadStallTimeout)

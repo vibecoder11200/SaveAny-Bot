@@ -20,6 +20,7 @@ type TGFile interface {
 type TGFileMessage interface {
 	TGFile
 	Message() *tg.Message
+	RefreshLocation(media tg.MessageMediaClass) error
 }
 
 type tgFile struct {
@@ -50,6 +51,19 @@ func (f *tgFile) Message() *tg.Message {
 	return f.message
 }
 
+// RefreshLocation swaps in the location built from fresh media — most
+// importantly a fresh file_reference — keeping the name, size, message and
+// download client untouched, so a download can restart in place after
+// Telegram rejected the old reference.
+func (f *tgFile) RefreshLocation(media tg.MessageMediaClass) error {
+	location, err := locationFromMedia(media)
+	if err != nil {
+		return err
+	}
+	f.location = location
+	return nil
+}
+
 func (f *tgFile) Dler() downloader.Client {
 	return f.dler
 }
@@ -73,9 +87,47 @@ func NewTGFile(
 	return f
 }
 
+// locationFromMedia builds a download location carrying the media's current
+// file_reference. It is the single place that turns media into a location, so
+// both the initial build and a refresh produce identical locations.
+func locationFromMedia(media tg.MessageMediaClass) (tg.InputFileLocationClass, error) {
+	switch m := media.(type) {
+	case *tg.MessageMediaDocument:
+		document, ok := m.Document.AsNotEmpty()
+		if !ok {
+			return nil, errors.New("document is empty")
+		}
+		return document.AsInputDocumentFileLocation(), nil
+	case *tg.MessageMediaPhoto:
+		photo, ok := m.Photo.AsNotEmpty()
+		if !ok {
+			return nil, errors.New("photo is empty")
+		}
+		if len(photo.Sizes) == 0 {
+			return nil, errors.New("photo sizes are empty")
+		}
+		photoSize := photo.Sizes[len(photo.Sizes)-1]
+		size, ok := photoSize.AsNotEmpty()
+		if !ok {
+			return nil, errors.New("photo size is empty")
+		}
+		location := new(tg.InputPhotoFileLocation)
+		location.ID = photo.GetID()
+		location.AccessHash = photo.GetAccessHash()
+		location.FileReference = photo.GetFileReference()
+		location.ThumbSize = size.GetType()
+		return location, nil
+	}
+	return nil, fmt.Errorf("unsupported media type: %T", media)
+}
+
 func FromMedia(media tg.MessageMediaClass, client downloader.Client, opts ...TGFileOption) (TGFile, error) {
 	switch m := media.(type) {
 	case *tg.MessageMediaDocument:
+		location, err := locationFromMedia(m)
+		if err != nil {
+			return nil, err
+		}
 		document, ok := m.Document.AsNotEmpty()
 		if !ok {
 			return nil, errors.New("document is empty")
@@ -88,7 +140,7 @@ func FromMedia(media tg.MessageMediaClass, client downloader.Client, opts ...TGF
 			}
 		}
 		file := NewTGFile(
-			document.AsInputDocumentFileLocation(),
+			location,
 			client,
 			document.Size,
 			fileName,
@@ -100,20 +152,10 @@ func FromMedia(media tg.MessageMediaClass, client downloader.Client, opts ...TGF
 		if !ok {
 			return nil, errors.New("photo is empty")
 		}
-		sizes := photo.Sizes
-		if len(sizes) == 0 {
-			return nil, errors.New("photo sizes are empty")
+		location, err := locationFromMedia(m)
+		if err != nil {
+			return nil, err
 		}
-		photoSize := sizes[len(sizes)-1]
-		size, ok := photoSize.AsNotEmpty()
-		if !ok {
-			return nil, errors.New("photo size is empty")
-		}
-		location := new(tg.InputPhotoFileLocation)
-		location.ID = photo.GetID()
-		location.AccessHash = photo.GetAccessHash()
-		location.FileReference = photo.GetFileReference()
-		location.ThumbSize = size.GetType()
 		fileName, err := functions.GetMediaFileName(m)
 		if err != nil {
 			fileName = fmt.Sprintf("photo_%d.png", photo.GetID())

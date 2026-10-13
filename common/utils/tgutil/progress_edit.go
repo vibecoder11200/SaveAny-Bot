@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/gotd/td/tg"
+	"github.com/gotd/td/tgerr"
 	"golang.org/x/time/rate"
 )
 
@@ -27,6 +28,11 @@ func SendProgressEdit(ctx context.Context, chatID int64, req *tg.MessagesEditMes
 		return nil
 	}
 	if _, err := ext.EditMessage(chatID, req); err != nil {
+		if tgerr.Is(err, "MESSAGE_NOT_MODIFIED") {
+			// The message already shows exactly this content — the coalescing
+			// queue raced a render that settled. Idempotent success.
+			return nil
+		}
 		return err
 	}
 	return nil

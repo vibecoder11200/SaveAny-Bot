@@ -2,17 +2,31 @@ package tfile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
 	"github.com/charmbracelet/log"
 	"github.com/krau/SaveAny-Bot/common/tdler"
 	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
+	tfilepkg "github.com/krau/SaveAny-Bot/pkg/tfile"
 	"golang.org/x/sync/errgroup"
 )
 
 func executeStream(ctx context.Context, task *Task) error {
 	logger := log.FromContext(ctx).WithPrefix(fmt.Sprintf("file[%s]", task.File.Name()))
+
+	// Streamed bytes go straight to storage, so there is no mid-stream retry;
+	// refresh the reference up front instead. A vanished source fails now,
+	// anything else falls back to the stored location.
+	if msgFile, ok := task.File.(tfilepkg.TGFileMessage); ok && msgFile.Message() != nil {
+		if err := tdler.RefreshFileLocation(ctx, msgFile); err != nil {
+			if errors.Is(err, tdler.ErrSourceGone) {
+				return fmt.Errorf("failed to download file: %w", err)
+			}
+			logger.Warnf("File reference refresh failed, trying the stored location: %v", err)
+		}
+	}
 
 	pr, pw := io.Pipe()
 	defer pr.Close()
