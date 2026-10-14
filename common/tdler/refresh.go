@@ -59,22 +59,26 @@ func RefreshFileLocation(ctx context.Context, file tfile.TGFileMessage) error {
 
 // DownloadParallelWithRefresh runs a parallel download and, when Telegram
 // rejects the file's now-stale reference, refreshes it from the source
-// message and restarts the download once from the top. The retry must
-// rebuild the downloader because the location is captured at build time.
-// Progress bytes of the aborted attempt are counted again — cosmetic only.
+// message and restarts the download from the top, up to maxRefreshes times —
+// a slow link can outlive one fresh reference (they last ~2 hours). The
+// retry must rebuild the downloader because the location is captured at
+// build time. Progress bytes of aborted attempts are counted again —
+// cosmetic only.
 func DownloadParallelWithRefresh(ctx context.Context, file tfile.TGFile, meter *dlutil.FloodWaitMeter, dlCtx context.Context, wrAt io.WriterAt) error {
-	_, err := NewDownloaderWithMeter(file, meter).Parallel(dlCtx, wrAt)
-	if err == nil || !IsFileReferenceExpired(err) {
-		return err
+	const maxRefreshes = 2
+	var err error
+	for refresh := 0; ; refresh++ {
+		_, err = NewDownloaderWithMeter(file, meter).Parallel(dlCtx, wrAt)
+		if err == nil || !IsFileReferenceExpired(err) {
+			return err
+		}
+		msgFile, ok := file.(tfile.TGFileMessage)
+		if !ok || refresh >= maxRefreshes {
+			return err
+		}
+		log.FromContext(ctx).Warnf("File reference expired mid-download, refreshing and retrying (attempt %d/%d): %v", refresh+1, maxRefreshes, err)
+		if rerr := RefreshFileLocation(ctx, msgFile); rerr != nil {
+			return fmt.Errorf("failed to download file: %w (reference refresh: %v)", err, rerr)
+		}
 	}
-	msgFile, ok := file.(tfile.TGFileMessage)
-	if !ok {
-		return err
-	}
-	log.FromContext(ctx).Warnf("File reference expired mid-download, refreshing and retrying once: %v", err)
-	if rerr := RefreshFileLocation(ctx, msgFile); rerr != nil {
-		return fmt.Errorf("failed to download file: %w (reference refresh: %v)", err, rerr)
-	}
-	_, err = NewDownloaderWithMeter(file, meter).Parallel(dlCtx, wrAt)
-	return err
 }
