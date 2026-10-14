@@ -24,6 +24,7 @@ import (
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/config"
 	storconfig "github.com/krau/SaveAny-Bot/config/storage"
+	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/consts/tglimit"
 	"github.com/krau/SaveAny-Bot/pkg/enums/ctxkey"
 	storenum "github.com/krau/SaveAny-Bot/pkg/enums/storage"
@@ -83,11 +84,27 @@ func (t *Telegram) Name() string {
 	return t.config.Name
 }
 
-// Exists always reports false: Telegram offers no reliable way to query
-// whether a file already exists in a chat, so conflict policies do not apply
-// to this backend.
+// Exists consults the local index of files this bot has saved through this
+// storage: Telegram offers no way to ask whether a file already exists in a
+// chat, so the ledger is the only signal. Files saved before the index
+// existed, or added to the chat by hand, are not detected.
 func (t *Telegram) Exists(ctx context.Context, storagePath string) bool {
-	return false
+	return database.TelegramSavedExists(ctx, t.Name(), path.Clean(storagePath))
+}
+
+// recordSaved indexes paths this storage just saved successfully. Best
+// effort: an indexing failure never fails an upload that already succeeded.
+func (t *Telegram) recordSaved(ctx context.Context, paths ...string) {
+	_ = database.RecordTelegramSaved(ctx, t.Name(), paths...)
+}
+
+// recordAfterSave passes the upload result through, indexing the path once
+// the upload actually succeeded.
+func (t *Telegram) recordAfterSave(ctx context.Context, err error, storagePath string) error {
+	if err == nil {
+		t.recordSaved(ctx, storagePath)
+	}
+	return err
 }
 
 func (t *Telegram) Save(ctx context.Context, r io.Reader, storagePath string) error {
@@ -170,7 +187,7 @@ func (t *Telegram) save(ctx context.Context, r io.Reader, storagePath string, pr
 						for _, part := range parts {
 							log.FromContext(ctx).Infof("Prepared lossless video part %s (%d bytes)", part.Name, part.Size)
 						}
-						return t.uploadLosslessVideoParts(ctx, tctx, storagePath, parts, captionOverride, progress)
+						return t.recordAfterSave(ctx, t.uploadLosslessVideoParts(ctx, tctx, storagePath, parts, captionOverride, progress), storagePath)
 					}
 					if _, seekErr := rs.Seek(0, io.SeekStart); seekErr != nil {
 						return fmt.Errorf("failed to seek large video before ZIP fallback: %w", seekErr)
@@ -178,7 +195,7 @@ func (t *Telegram) save(ctx context.Context, r io.Reader, storagePath string, pr
 				}
 			}
 		}
-		return t.splitUpload(tctx, r, filename, upler, peer, size, splitSize, progress)
+		return t.recordAfterSave(ctx, t.splitUpload(tctx, r, filename, upler, peer, size, splitSize, progress), storagePath)
 	}
 
 	if err := t.limiter.Wait(ctx); err != nil {
@@ -192,6 +209,9 @@ func (t *Telegram) save(ctx context.Context, r io.Reader, storagePath string, pr
 		WithUploader(prepared.uploader).
 		To(prepared.peer).
 		Media(ctx, prepared.media)
+	if err == nil {
+		t.recordSaved(ctx, storagePath)
+	}
 	return err
 }
 
@@ -522,8 +542,15 @@ func (t *Telegram) saveMediaGroup(
 		}
 
 		builder := tctx.Sender.WithUploader(prepared[0].uploader).To(prepared[0].peer)
+		savedPaths := make([]string, 0, len(group))
+		for _, mediaItem := range group {
+			savedPaths = append(savedPaths, path.Clean(mediaItem.item.StoragePath))
+		}
 		if len(prepared) == 1 {
 			_, err := builder.Media(ctx, prepared[0].media)
+			if err == nil {
+				t.recordSaved(ctx, savedPaths...)
+			}
 			return err
 		}
 		media := make([]message.MultiMediaOption, len(prepared))
@@ -533,6 +560,7 @@ func (t *Telegram) saveMediaGroup(
 		if _, err := builder.Album(ctx, media[0], media[1:]...); err != nil {
 			return fmt.Errorf("failed to send media album: %w", err)
 		}
+		t.recordSaved(ctx, savedPaths...)
 		return nil
 	}, retry.Context(ctx), retry.RetryTimes(uint(config.C().Retry)))
 }

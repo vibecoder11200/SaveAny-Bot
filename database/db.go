@@ -43,7 +43,7 @@ func Init(ctx context.Context) {
 		sqlDB.SetMaxOpenConns(1)
 	}
 	logger.Debug("Database connected")
-	if err := db.AutoMigrate(&User{}, &Dir{}, &Rule{}, &WatchChat{}, &PendingTask{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &Dir{}, &Rule{}, &WatchChat{}, &PendingTask{}, &TelegramSavedFile{}); err != nil {
 		logger.Fatal("Database migration failed; if upgrading from an old version, try deleting the database file and retrying", "error", err)
 	}
 	if err := syncUsers(ctx); err != nil {
