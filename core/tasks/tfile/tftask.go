@@ -46,10 +46,13 @@ func (t *Task) JournalPayload() (int64, journal.TGTaskPayload, bool) {
 	if !ok {
 		return 0, journal.TGTaskPayload{}, false
 	}
-	return t.UserID, journal.TGTaskPayload{
-		Files:   []journal.TGFileRef{ref},
-		AsBatch: false,
-	}, true
+	payload := journal.TGTaskPayload{Files: []journal.TGFileRef{ref}, AsBatch: false}
+	// Record the progress message so recovery can re-attach to it instead of
+	// orphaning it and opening a new thread after a restart.
+	if p, ok := t.Progress.(*Progress); ok && p.MessageID != 0 {
+		payload.TrackChatID, payload.TrackMsgID = p.ChatID, p.MessageID
+	}
+	return t.UserID, payload, true
 }
 
 // viaUserbot reports whether the file was built on the userbot client;

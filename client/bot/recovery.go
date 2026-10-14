@@ -13,6 +13,7 @@ import (
 	"github.com/celestix/gotgproto/ext"
 	"github.com/charmbracelet/log"
 	"github.com/gotd/td/tg"
+	"github.com/gotd/td/tgerr"
 
 	userclient "github.com/krau/SaveAny-Bot/client/user"
 	"github.com/krau/SaveAny-Bot/common/i18n"
@@ -215,16 +216,7 @@ func recoverRow(ctx context.Context, botCtx *ext.Context, row database.PendingTa
 	// bot; downloads ride the client each file was built with).
 	taskCtx := ext.NewContext(ctx, botCtx.Raw, botCtx.PeerStorage, botCtx.Self, botCtx.Sender, nil, false)
 	injectCtx := tgutil.ExtWithContext(ctx, taskCtx)
-	trackMsgID := 0
-	if row.UserID != 0 {
-		if sent, err := taskCtx.SendMessage(row.UserID, &tg.MessagesSendMessageRequest{
-			Message: i18n.T(i18nk.BotMsgRecoveryInfoTaskRecovered),
-		}); err == nil {
-			trackMsgID = sent.ID
-		} else {
-			logger.Warnf("Failed to send recovery notice to user %d: %v", row.UserID, err)
-		}
-	}
+	trackChatID, trackMsgID := recoverTrackMessage(taskCtx, logger, row.UserID, payload)
 
 	dlerFor := func(ref journal.TGFileRef) *tg.Client {
 		if ref.ViaUserbot && uctx != nil {
@@ -262,7 +254,7 @@ func recoverRow(ctx context.Context, botCtx *ext.Context, row database.PendingTa
 		}
 		var progress batchtfile.ProgressTracker
 		if trackMsgID != 0 {
-			progress = batchtfile.NewProgressTracker(trackMsgID, row.UserID)
+			progress = batchtfile.NewProgressTracker(trackMsgID, trackChatID)
 		}
 		task := batchtfile.NewBatchTGFileTask(row.ID, injectCtx, elems, progress, true)
 		task.UserID = row.UserID
@@ -296,7 +288,7 @@ func recoverRow(ctx context.Context, botCtx *ext.Context, row database.PendingTa
 		}
 		var progress coretfile.ProgressTracker
 		if trackMsgID != 0 {
-			progress = coretfile.NewProgressTrack(trackMsgID, row.UserID)
+			progress = coretfile.NewProgressTrack(trackMsgID, trackChatID)
 		}
 		task, err := coretfile.NewTGFileTask(row.ID, injectCtx, file, p.stor, p.ref.Path, progress)
 		if err != nil {
@@ -327,6 +319,44 @@ func resolveRecoveryStorage(ctx context.Context, userID int64, name string) (sto
 		return stor, nil
 	}
 	return nil, fmt.Errorf("storage not found: %s", name)
+}
+
+// recoverTrackMessage decides which message recovered progress edits go to:
+// re-attach to the task's original progress message when the journal
+// recorded one and it still exists, else send a fresh notice. A flood-limited
+// edit still re-attaches — the message is there and progress editing resumes
+// once the penalty lifts; only a genuinely missing message falls back.
+func recoverTrackMessage(taskCtx *ext.Context, logger *log.Logger, userID int64, payload journal.TGTaskPayload) (chatID int64, msgID int) {
+	if payload.TrackMsgID != 0 {
+		chatID := payload.TrackChatID
+		if chatID == 0 {
+			chatID = userID
+		}
+		_, err := taskCtx.EditMessage(chatID, &tg.MessagesEditMessageRequest{
+			ID:      payload.TrackMsgID,
+			Message: i18n.T(i18nk.BotMsgRecoveryInfoTaskRecovered),
+		})
+		switch {
+		case err == nil:
+			return chatID, payload.TrackMsgID
+		case tgerr.Is(err, "MESSAGE_ID_INVALID"):
+			logger.Warnf("Original progress message %d is gone, opening a new one", payload.TrackMsgID)
+		default:
+			logger.Warnf("Cannot update the original progress message yet, re-attaching anyway: %v", err)
+			return chatID, payload.TrackMsgID
+		}
+	}
+	if userID == 0 {
+		return 0, 0
+	}
+	sent, err := taskCtx.SendMessage(userID, &tg.MessagesSendMessageRequest{
+		Message: i18n.T(i18nk.BotMsgRecoveryInfoTaskRecovered),
+	})
+	if err != nil {
+		logger.Warnf("Failed to send recovery notice to user %d: %v", userID, err)
+		return 0, 0
+	}
+	return userID, sent.ID
 }
 
 // sendRecoverySummary reports one boot's recovery result to the user. One

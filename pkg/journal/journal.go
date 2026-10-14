@@ -40,6 +40,11 @@ type TGTaskPayload struct {
 	Files   []TGFileRef `json:"files"`
 	AsBatch bool        `json:"as_batch"`
 	Source  string      `json:"source,omitempty"`
+	// TrackChatID/TrackMsgID identify the progress message the task reports
+	// to, so recovery can re-attach to it instead of orphaning it and opening
+	// a new one. Zero means no tracker was recorded.
+	TrackChatID int64 `json:"track_chat_id,omitempty"`
+	TrackMsgID  int   `json:"track_msg_id,omitempty"`
 }
 
 // NewTGFileRef builds a file reference from a message-backed TG file and
