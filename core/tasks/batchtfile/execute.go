@@ -481,11 +481,14 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 			logger.Errorf("Failed to close local file: %v", err)
 		}
 	}()
-	dlCtx, dlCancel := context.WithCancel(ctx)
+	wdog, wctx := dlutil.NewStallWatchdog(ctx, dlutil.DownloadStallTimeout)
+	defer wdog.Close()
+	dlCtx, dlCancel := context.WithCancel(wctx)
 	defer dlCancel()
 	meter := dlutil.NewFloodWaitMeter(dlCtx, dlCancel)
 	defer meter.Close()
 	wrAt := ioutil.NewProgressWriterAt(localFile, func(n int) {
+		wdog.Kick()
 		t.recordItemDownload(elem.ID, int64(n), time.Now())
 		downloaded := t.downloaded.Add(int64(n))
 		t.notifyProgress(ctx)
@@ -500,6 +503,9 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 	if err != nil {
 		t.markItemFailed(ctx, elem.ID, FailureStageDownload, err)
 		t.notifyStateChange(ctx)
+		if wdog.Stalled() {
+			return fmt.Errorf("download stalled: no data received for %s", dlutil.DownloadStallTimeout)
+		}
 		if meter.Crawled() {
 			return dlutil.CrawlError(meter.Absorbed())
 		}
