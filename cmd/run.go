@@ -86,6 +86,11 @@ func initAll(ctx context.Context) (<-chan struct{}, error) {
 	logger := log.FromContext(ctx)
 	i18n.Init(config.C().Lang)
 	logger.Info("Initializing...")
+	// Everything in the cache dir at startup is orphaned: the shutdown
+	// clean below never runs after a kill -9 (e.g. a hung task blocking
+	// graceful exit past the docker stop timeout), and recovery always
+	// creates fresh cache files.
+	cleanCache()
 	database.Init(ctx)
 	storage.LoadStorages(ctx)
 	if config.C().Parser.PluginEnable {
