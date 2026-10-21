@@ -37,7 +37,9 @@ func progressEditFlooded() bool {
 	return time.Now().UnixNano() < progressEditFloodedUntil.Load()
 }
 
-func markProgressEditFlooded(wait time.Duration) {
+// markProgressEditFlooded pauses progress edits for wait (clamped to
+// [0, progressEditMaxPause]) and returns the clamped duration.
+func markProgressEditFlooded(wait time.Duration) time.Duration {
 	if wait > progressEditMaxPause {
 		wait = progressEditMaxPause
 	}
@@ -45,6 +47,7 @@ func markProgressEditFlooded(wait time.Duration) {
 		wait = 0
 	}
 	progressEditFloodedUntil.Store(time.Now().Add(wait).UnixNano())
+	return wait
 }
 
 func SendProgressEdit(ctx context.Context, chatID int64, req *tg.MessagesEditMessageRequest) error {
@@ -62,11 +65,7 @@ func SendProgressEdit(ctx context.Context, chatID int64, req *tg.MessagesEditMes
 			return nil
 		}
 		if wait, ok := tgerr.AsFloodWait(err); ok {
-			markProgressEditFlooded(wait)
-			pause := wait
-			if pause > progressEditMaxPause {
-				pause = progressEditMaxPause
-			}
+			pause := markProgressEditFlooded(wait)
 			log.FromContext(ctx).Warnf("Progress edit flood-limited, pausing progress edits for %s", pause)
 		}
 		return err

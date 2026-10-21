@@ -209,10 +209,7 @@ func (t *Telegram) save(ctx context.Context, r io.Reader, storagePath string, pr
 		WithUploader(prepared.uploader).
 		To(prepared.peer).
 		Media(ctx, prepared.media)
-	if err == nil {
-		t.recordSaved(ctx, storagePath)
-	}
-	return err
+	return t.recordAfterSave(ctx, err, storagePath)
 }
 
 func contentLength(ctx context.Context) int64 {
