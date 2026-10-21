@@ -7,7 +7,6 @@ import (
 	"github.com/celestix/gotgproto/dispatcher"
 	"github.com/celestix/gotgproto/ext"
 	"github.com/charmbracelet/log"
-	"github.com/duke-git/lancet/v2/validator"
 	"github.com/gotd/td/tg"
 	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/dirutil"
 	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/mediautil"
@@ -130,9 +129,12 @@ func handleBatchSave(ctx *ext.Context, update *ext.Update, args []string) error 
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidMsgIdRange, map[string]any{"Error": err.Error()})), nil)
 		return dispatcher.EndGroups
 	}
+	// Prefer the userbot for source resolution and fetching: it reaches
+	// every chat the user's account can see, while the bot only reads
+	// channels it administers (a @username source therefore returns zero
+	// messages when routed through the bot).
 	tctx := ctx
-	uctx := user.GetCtx()
-	if uctx != nil && validator.IsIntStr(chatArg) {
+	if uctx := user.GetCtx(); uctx != nil {
 		tctx = uctx
 	}
 	chatID, err := tgutil.ParseChatID(tctx, chatArg)
