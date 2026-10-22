@@ -66,6 +66,7 @@ bot:
       parser: "Manage parsers"
       update: "Check for updates"
       syncpeers: "Sync peer chats (UserBot)"
+      id: "Resolve a @username to its chat ID"
     save_help_text: |
       Usage:
 
@@ -458,6 +459,10 @@ bot:
       start: "Starting to sync peers..."
       success: "Peer sync completed, total {{.Count}} chats synced"
       failed: "Peer sync failed: {{.Error}}"
+    id:
+      usage: "Usage: /id @username"
+      info: "Title: {{.Title}}\nType: {{.Type}}\nID: {{.ID}}"
+      error_resolve_failed: "Failed to resolve username: {{.Error}}"
     aria2:
       error_aria2_not_enabled: "Aria2 feature is not enabled in the configuration"
       error_aria2_client_init_failed: "Aria2 client initialization failed: {{.Error}}"

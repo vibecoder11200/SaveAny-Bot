@@ -62,6 +62,7 @@ bot:
       unwatch: "取消监听聊天(UserBot)"
       lswatch: "列出监听的聊天(UserBot)"
       syncpeers: "同步对话列表(UserBot)"
+      id: "解析 @username 为对话 ID"
       config: "修改配置"
       fnametmpl: "设置文件命名模板"
       help: "显示帮助"
@@ -459,6 +460,10 @@ bot:
       start: "正在同步对话列表..."
       success: "对话列表同步完成, 共同步 {{.Count}} 个对话"
       failed: "对话列表同步失败: {{.Error}}"
+    id:
+      usage: "用法: /id @username"
+      info: "名称: {{.Title}}\n类型: {{.Type}}\nID: {{.ID}}"
+      error_resolve_failed: "解析用户名失败: {{.Error}}"
     aria2:
       error_aria2_not_enabled: "Aria2 功能未启用, 请在配置文件中启用"
       error_aria2_client_init_failed: "Aria2 客户端初始化失败: {{.Error}}"

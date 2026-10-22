@@ -42,6 +42,7 @@ var CommandHandlers = []DescCommandHandler{
 	{"unwatch", i18nk.BotMsgCmdUnwatch, handleUnwatchCmd},
 	{"lswatch", i18nk.BotMsgCmdLswatch, handleLswatchCmd},
 	{"syncpeers", i18nk.BotMsgCmdSyncpeers, handleSyncpeersCmd},
+	{"id", i18nk.BotMsgCmdId, handleIdCmd},
 	{"update", i18nk.BotMsgCmdUpdate, handleUpdateCmd},
 }
 
