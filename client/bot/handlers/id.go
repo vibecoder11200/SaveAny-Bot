@@ -18,7 +18,7 @@ import (
 func handleIdCmd(ctx *ext.Context, update *ext.Update) error {
 	args := strings.Fields(string(update.EffectiveMessage.Text))
 	if len(args) != 2 || !strings.HasPrefix(args[1], "@") || len(args[1]) < 2 {
-		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgIdUsage)), nil)
+		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgChatidUsage)), nil)
 		return dispatcher.EndGroups
 	}
 	tctx := ctx
@@ -27,19 +27,19 @@ func handleIdCmd(ctx *ext.Context, update *ext.Update) error {
 	}
 	chat, err := tctx.ResolveUsername(args[1])
 	if err != nil {
-		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgIdErrorResolveFailed, map[string]any{
+		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgChatidErrorResolveFailed, map[string]any{
 			"Error": err.Error(),
 		})), nil)
 		return dispatcher.EndGroups
 	}
 	if chat.GetID() == 0 {
-		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgIdErrorResolveFailed, map[string]any{
+		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgChatidErrorResolveFailed, map[string]any{
 			"Error": fmt.Sprintf("no chat found for username: %s", args[1]),
 		})), nil)
 		return dispatcher.EndGroups
 	}
 	title, typ := chatTitleAndType(chat)
-	ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgIdInfo, map[string]any{
+	ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgChatidInfo, map[string]any{
 		"Title": title,
 		"Type":  typ,
 		"ID":    chat.GetID(),

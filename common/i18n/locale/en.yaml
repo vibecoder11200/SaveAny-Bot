@@ -66,7 +66,7 @@ bot:
       parser: "Manage parsers"
       update: "Check for updates"
       syncpeers: "Sync peer chats (UserBot)"
-      id: "Resolve a @username to its chat ID"
+      chatid: "Resolve a @username to its chat ID"
     save_help_text: |
       Usage:
 
@@ -459,7 +459,7 @@ bot:
       start: "Starting to sync peers..."
       success: "Peer sync completed, total {{.Count}} chats synced"
       failed: "Peer sync failed: {{.Error}}"
-    id:
+    chatid:
       usage: "Usage: /id @username"
       info: "Title: {{.Title}}\nType: {{.Type}}\nID: {{.ID}}"
       error_resolve_failed: "Failed to resolve username: {{.Error}}"
