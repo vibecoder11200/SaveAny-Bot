@@ -138,7 +138,7 @@ func (t *Telegram) SendExistingMedia(ctx context.Context, sendCtx *ext.Context, 
 	if caption != "" {
 		captionOpts = append(captionOpts, styling.Plain(caption))
 	}
-	_, err := sendCtx.Sender.To(peer).Media(ctx, message.Media(media, captionOpts...))
+	_, err := t.sendBuilder(sendCtx.Sender.To(peer)).Media(ctx, message.Media(media, captionOpts...))
 	if err != nil {
 		return err
 	}
@@ -255,9 +255,9 @@ func (t *Telegram) save(ctx context.Context, r io.Reader, storagePath string, pr
 	if err != nil {
 		return err
 	}
-	_, err = tctx.Sender.
+	_, err = t.sendBuilder(tctx.Sender.
 		WithUploader(prepared.uploader).
-		To(prepared.peer).
+		To(prepared.peer)).
 		Media(ctx, prepared.media)
 	return t.recordAfterSave(ctx, err, storagePath)
 }
@@ -588,7 +588,7 @@ func (t *Telegram) saveMediaGroup(
 			prepared = append(prepared, *media)
 		}
 
-		builder := tctx.Sender.WithUploader(prepared[0].uploader).To(prepared[0].peer)
+		builder := t.sendBuilder(tctx.Sender.WithUploader(prepared[0].uploader).To(prepared[0].peer))
 		savedPaths := make([]string, 0, len(group))
 		for _, mediaItem := range group {
 			savedPaths = append(savedPaths, path.Clean(mediaItem.item.StoragePath))
@@ -614,6 +614,18 @@ func (t *Telegram) saveMediaGroup(
 
 func (t *Telegram) CannotStream() string {
 	return "Telegram storage must use a ReaderSeeker"
+}
+
+// sendBuilder narrows a located request builder to the sender every send
+// path uses, routing it into the configured forum topic when one is set: a
+// topic is addressed by replying to its root message id (see
+// core.telegram.org/api/forum). With no topic configured the builder is
+// untouched, so non-forum chats keep the flat-chat behavior.
+func (t *Telegram) sendBuilder(rb *message.RequestBuilder) *message.Builder {
+	if t.config.TopicID == 0 {
+		return &rb.Builder
+	}
+	return rb.Reply(t.config.TopicID)
 }
 
 func (t *Telegram) splitUpload(
@@ -682,9 +694,9 @@ func (t *Telegram) splitUpload(
 			Filename(filepath.Base(matched[0])).
 			ForceFile(true).
 			MIME("application/zip")
-		_, err = ctx.Sender.
+		_, err = t.sendBuilder(ctx.Sender.
 			WithUploader(upler).
-			To(peer).
+			To(peer)).
 			Media(ctx, doc)
 		return err
 	}
@@ -700,8 +712,8 @@ func (t *Telegram) splitUpload(
 	sender := ctx.Sender
 
 	if len(multiMedia) <= tglimit.MaxAlbumItems {
-		_, err = sender.WithUploader(upler).
-			To(peer).
+		_, err = t.sendBuilder(sender.WithUploader(upler).
+			To(peer)).
 			Album(ctx, multiMedia[0], multiMedia[1:]...)
 		return err
 	}
@@ -709,8 +721,8 @@ func (t *Telegram) splitUpload(
 	for i := 0; i < len(multiMedia); i += tglimit.MaxAlbumItems {
 		end := min(i+tglimit.MaxAlbumItems, len(multiMedia))
 		batch := multiMedia[i:end]
-		_, err = sender.WithUploader(upler).
-			To(peer).
+		_, err = t.sendBuilder(sender.WithUploader(upler).
+			To(peer)).
 			Album(ctx, batch[0], batch[1:]...)
 		if err != nil {
 			return fmt.Errorf("failed to send album batch: %w", err)

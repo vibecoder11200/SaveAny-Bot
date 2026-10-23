@@ -8,12 +8,18 @@ import (
 
 type TelegramStorageConfig struct {
 	BaseConfig
-	ChatID          int64 `toml:"chat_id" mapstructure:"chat_id" json:"chat_id"`
-	ForceFile       bool  `toml:"force_file" mapstructure:"force_file" json:"force_file"`
-	RateLimit       int   `toml:"rate_limit" mapstructure:"rate_limit" json:"rate_limit"`
-	RateBurst       int   `toml:"rate_burst" mapstructure:"rate_burst" json:"rate_burst"`
-	SkipLarge       bool  `toml:"skip_large" mapstructure:"skip_large" json:"skip_large"` // skip files larger than Telegram limit(2GB)
-	SplitLargeVideo bool  `toml:"split_large_video" mapstructure:"split_large_video" json:"split_large_video"`
+	ChatID int64 `toml:"chat_id" mapstructure:"chat_id" json:"chat_id"`
+	// TopicID targets a forum topic inside the chat: the topic's root
+	// message id (the trailing number of a t.me/c/<chat>/<topic> link).
+	// 0 or unset sends without a topic — the General topic in forum groups,
+	// the plain chat everywhere else. Only meaningful when the chat has
+	// topics enabled; a wrong id fails the send visibly.
+	TopicID         int  `toml:"topic_id" mapstructure:"topic_id" json:"topic_id"`
+	ForceFile       bool `toml:"force_file" mapstructure:"force_file" json:"force_file"`
+	RateLimit       int  `toml:"rate_limit" mapstructure:"rate_limit" json:"rate_limit"`
+	RateBurst       int  `toml:"rate_burst" mapstructure:"rate_burst" json:"rate_burst"`
+	SkipLarge       bool `toml:"skip_large" mapstructure:"skip_large" json:"skip_large"` // skip files larger than Telegram limit(2GB)
+	SplitLargeVideo bool `toml:"split_large_video" mapstructure:"split_large_video" json:"split_large_video"`
 	// split files larger than the uploader account limit into parts of specified size, in MB
 	// leave 0 to use the account limit (2000MB for bots/regular users, 4000MB for Premium users)
 	// only effective when SkipLarge is false
@@ -27,6 +33,9 @@ func (m *TelegramStorageConfig) Validate() error {
 	}
 	if m.RateLimit < 0 || m.RateBurst < 0 {
 		return fmt.Errorf("rate_limit and rate_burst must be greater than 0 for telegram storage")
+	}
+	if m.TopicID < 0 {
+		return fmt.Errorf("topic_id must be a forum topic root message id, 0 to disable, for telegram storage")
 	}
 	return nil
 }

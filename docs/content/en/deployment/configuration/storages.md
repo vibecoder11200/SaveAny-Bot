@@ -77,6 +77,7 @@ Stream mode is not supported.
 
 ```toml
 chat_id = "123456789" # Telegram chat ID, the bot will send files to this chat
+topic_id = 0 # Forum topic root message id inside the chat (the trailing number of a t.me/c/<chat>/<topic> link). 0 sends without a topic (General in forum groups). Only for chats with topics enabled.
 force_file = false # Force sending as file, default is false
 skip_large = false # Skip large files, default is false. If enabled, files exceeding Telegram's limit will not be uploaded.
 split_large_video = false # Losslessly split oversized videos into one album of up to 10 independently playable parts. Falls back to ZIP parts on failure or when more than 10 parts are required.

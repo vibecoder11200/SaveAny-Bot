@@ -78,6 +78,8 @@ https://s3.example.com/your_bucket_name/path/to/s3/your_file
 ```toml
 # Telegram 聊天 ID, Bot 将把文件发送到这个聊天
 chat_id = "123456789"
+# 论坛话题的根消息 ID（t.me/c/<chat>/<topic> 链接末尾的数字）。0 表示不指定话题（论坛群组中发送到 General）。仅适用于已开启话题的群组.
+topic_id = 0
 # 是否强制使用文件方式发送, 默认为 false
 force_file = false
 # 是否跳过大文件, 默认为 false. 如果启用, 超过 Telegram 限制的文件将不会上传.
