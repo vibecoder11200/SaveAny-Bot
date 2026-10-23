@@ -107,6 +107,39 @@ func (t *Telegram) recordAfterSave(ctx context.Context, err error, storagePath s
 	return err
 }
 
+// SendExistingMedia re-sends media that already lives on Telegram into this
+// storage's configured chat — no download, no re-upload. The destination is
+// pinned to the configured chat id: the storage path is bookkeeping only and
+// must never steer the message into an attacker-chosen chat. The send rides
+// sendCtx, the account that fetched the source media, because access hashes
+// and file references are account-scoped.
+//
+// The media/request structures carry access hashes and file references and
+// must never be logged — only scalar fields of the outcome may be.
+func (t *Telegram) SendExistingMedia(ctx context.Context, sendCtx *ext.Context, media tg.InputMediaClass, storagePath, caption string) error {
+	storagePath = path.Clean(storagePath)
+	if sendCtx == nil {
+		return fmt.Errorf("%w: no client context to send from", storagetypes.ErrResendPreflight)
+	}
+	peer := tryGetInputPeer(sendCtx, t.config.ChatID)
+	if peer == nil || peer.Zero() {
+		return fmt.Errorf("%w: no input peer for chat %d on the sending account", storagetypes.ErrResendPreflight, t.config.ChatID)
+	}
+	if err := t.limiter.Wait(ctx); err != nil {
+		return fmt.Errorf("rate limit failed: %w", err)
+	}
+	option := message.Media(media)
+	if caption != "" {
+		option = message.Media(media, styling.Plain(caption))
+	}
+	_, err := sendCtx.Sender.To(peer).Media(ctx, option)
+	if err != nil {
+		return err
+	}
+	t.recordSaved(ctx, storagePath)
+	return nil
+}
+
 func (t *Telegram) Save(ctx context.Context, r io.Reader, storagePath string) error {
 	return t.save(ctx, r, storagePath, nil)
 }
@@ -123,6 +156,15 @@ func (t *Telegram) SaveWithProgress(
 	return t.save(ctx, r, storagePath, newUploadProgress(size, onProgress))
 }
 
+// SkipLargeLimit reports the size above which this storage drops uploads
+// when SkipLarge is enabled, so callers can skip before downloading.
+func (t *Telegram) SkipLargeLimit(ctx context.Context) (int64, bool) {
+	if !t.config.SkipLarge {
+		return 0, false
+	}
+	return maxUploadFileSize(tgutil.ExtFromContext(ctx)), true
+}
+
 func (t *Telegram) save(ctx context.Context, r io.Reader, storagePath string, progress *uploadProgress) error {
 	storagePath = path.Clean(storagePath)
 	captionOverride := sourceCaptionOverride(ctx)
@@ -134,7 +176,9 @@ func (t *Telegram) save(ctx context.Context, r io.Reader, storagePath string, pr
 	maxUploadSize := maxUploadFileSize(tctx)
 	if t.config.SkipLarge && size > maxUploadSize {
 		log.FromContext(ctx).Warnf("Skipping file larger than Telegram limit (%d bytes): %d bytes", maxUploadSize, size)
-		return nil
+		// Sentinel, not nil: callers must know nothing was uploaded, so no
+		// ledger or dedup record is written for this file.
+		return storagetypes.ErrSkippedLarge
 	}
 	splitSize := t.splitSize(maxUploadSize)
 	if size > splitSize {

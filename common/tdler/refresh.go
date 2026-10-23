@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/celestix/gotgproto/ext"
 	"github.com/charmbracelet/log"
 	"github.com/gotd/td/tgerr"
 	userclient "github.com/krau/SaveAny-Bot/client/user"
@@ -26,6 +27,17 @@ func IsFileReferenceExpired(err error) bool {
 	return tgerr.Is(err, "FILE_REFERENCE_EXPIRED")
 }
 
+// SendCtxForFile picks the client context that must carry operations tied to
+// a file's media — reference refresh, resend — because access hashes and file
+// references are account-scoped: files built on the userbot must be operated
+// on through the userbot, the bot often cannot read that chat at all.
+func SendCtxForFile(ctx context.Context, file tfile.TGFile) *ext.Context {
+	if uctx := userclient.GetCtx(); uctx != nil && file.Dler() == uctx.Raw {
+		return uctx
+	}
+	return tgutil.ExtFromContext(ctx)
+}
+
 // RefreshFileLocation re-fetches the file's source message and swaps in a
 // fresh file_reference, in place. The fetch rides the client the file was
 // built with: files downloaded through the userbot must be re-fetched through
@@ -35,10 +47,7 @@ func RefreshFileLocation(ctx context.Context, file tfile.TGFileMessage) error {
 	if msg == nil {
 		return errors.New("file has no source message to refresh")
 	}
-	fetchCtx := tgutil.ExtFromContext(ctx)
-	if uctx := userclient.GetCtx(); uctx != nil && file.Dler() == uctx.Raw {
-		fetchCtx = uctx
-	}
+	fetchCtx := SendCtxForFile(ctx, file)
 	if fetchCtx == nil {
 		return errors.New("no client context available to refresh the file reference")
 	}
