@@ -149,34 +149,22 @@ func (t *Task) processResource(ctx context.Context, resource parser.Resource) er
 		if err != nil {
 			return fmt.Errorf("failed to seek cache file for resource %s: %w", resource.URL, err)
 		}
-		var contentHash string
-		if t.UserID > 0 {
-			skip, hash, derr := database.DedupCheckHash(ctx, t.UserID, t.Stor.Name(), cacheFile.Name())
-			switch {
-			case derr != nil:
-				logger.Warnf("dedup hash check failed (fail-open, continuing upload): %v", derr)
-			case skip:
-				logger.Infof("dedup skip (hash sha256:%s…): already saved to storage %s, path %s", hash[:min(12, len(hash))], t.Stor.Name(), resource.Filename)
-				return nil
-			default:
-				contentHash = hash
-			}
+		// Content-hash dedup: identical bytes under a different name are
+		// dropped after the download but before the upload.
+		dedupSkip, contentHash := database.DedupSkipByHash(ctx, logger, t.UserID, t.Stor.Name(), cacheFile.Name(), resource.Filename)
+		if dedupSkip {
+			return nil
 		}
-		skippedLarge := false
 		saveErr := t.Stor.Save(ctx, cacheFile, path.Join(t.StorPath, resource.Filename))
 		if errors.Is(saveErr, storagetypes.ErrSkippedLarge) {
+			// Policy skip: nothing was uploaded, so no dedup record.
 			logger.Warnf("File skipped by storage (too large): %s", resource.Filename)
-			skippedLarge = true
-			saveErr = nil
+			return nil
 		}
 		if saveErr != nil {
 			return fmt.Errorf("failed to save resource %s: %w", resource.URL, saveErr)
 		}
-		if !skippedLarge && t.UserID > 0 && contentHash != "" {
-			if derr := database.DedupRecordSaved(ctx, t.UserID, t.Stor.Name(), "", contentHash, 0, path.Join(t.StorPath, resource.Filename)); derr != nil {
-				logger.Errorf("dedup record failed after upload (at-least-once duplicate risk): %v", derr)
-			}
-		}
+		database.RecordDedupAfterUpload(ctx, logger, t.UserID, t.Stor.Name(), "", contentHash, 0, path.Join(t.StorPath, resource.Filename))
 		return nil
 	}, retry.Context(ctx), retry.RetryTimes(uint(config.C().Retry)))
 	if ctx.Err() != nil {

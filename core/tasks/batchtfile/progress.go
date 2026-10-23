@@ -133,10 +133,6 @@ func buildBatchEditMessageRequest(messageID int, taskID string, message rendered
 	return req
 }
 
-func buildBatchProgressText(info TaskInfo, skipped, deduped []string, activeLimit int) string {
-	return buildBatchProgressMessage(info, skipped, deduped, activeLimit).Text
-}
-
 func buildBatchProgressMessage(info TaskInfo, skipped, deduped []string, activeLimit int) renderedBatchMessage {
 	items := info.Items()
 	completed, waiting, downloaded, failed, dedupedRuntime, skippedRuntime := itemCounts(items)
@@ -197,8 +193,8 @@ func buildBatchDoneMarkup(ctx context.Context, info TaskInfo, skipped, deduped [
 	if totalSize == 0 {
 		totalSize = info.TotalSize()
 	}
+	completed, _, _, failed, dedupedRuntime, skippedRuntime := itemCounts(items)
 	if err == nil {
-		completed, _, _, failed, dedupedRuntime, skippedRuntime := itemCounts(items)
 		dedupedTotal := dedupedRuntime + len(deduped)
 		skippedTotal := len(skipped) + skippedRuntime
 		// Report per-element outcomes instead of full completion.
@@ -216,7 +212,6 @@ func buildBatchDoneMarkup(ctx context.Context, info TaskInfo, skipped, deduped [
 			"Size":  dlutil.FormatSize(totalSize),
 		})
 	}
-	completed, _, _, failed, dedupedRuntime, skippedRuntime := itemCounts(items)
 	incomplete := max(len(items)-completed-failed-dedupedRuntime-skippedRuntime, 0)
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return localizedProgressMarkup(i18nk.BotMsgProgressBatchCanceled, map[string]any{

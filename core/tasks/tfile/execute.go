@@ -97,13 +97,7 @@ func (t *Task) Execute(ctx context.Context) error {
 	}()
 	err = tdler.DownloadParallelWithRefresh(ctx, t.File, meter, dlCtx, wrAt)
 	if err != nil {
-		if wdog.Stalled() {
-			return fmt.Errorf("download stalled: no data received for %s", dlutil.DownloadStallTimeout)
-		}
-		if meter.Crawled() {
-			return dlutil.CrawlError(meter.Absorbed())
-		}
-		return fmt.Errorf("failed to download file: %w", err)
+		return dlutil.DownloadFailure(err, wdog, meter)
 	}
 	logger.Infof("File downloaded successfully")
 	if path.Ext(t.File.Name()) == "" {
@@ -118,17 +112,14 @@ func (t *Task) Execute(ctx context.Context) error {
 		return fmt.Errorf("failed to get file stat: %w", err)
 	}
 	// Content-hash dedup: identical bytes under a different name are dropped
-	// here, after the download but before the upload.
-	if t.UserID > 0 && !t.DisableDedup {
-		skip, hash, herr := database.DedupCheckHash(ctx, t.UserID, t.Storage.Name(), t.localPath)
-		if herr != nil {
-			logger.Warnf("dedup hash check failed (fail-open, continuing upload): %v", herr)
-		} else if skip {
-			logger.Infof("dedup skip (hash sha256:%s…): already saved to storage %s, path %s", hash[:min(12, len(hash))], t.Storage.Name(), t.Path)
+	// here, after the download but before the upload. DisableDedup (overwrite)
+	// skips the check but the record below still indexes the upload.
+	if !t.DisableDedup {
+		dedupSkip, hash := database.DedupSkipByHash(ctx, logger, t.UserID, t.Storage.Name(), t.localPath, t.Path)
+		if dedupSkip {
 			return nil // the deferred OnDone reports success
-		} else {
-			t.uploadHash = hash
 		}
+		t.uploadHash = hash
 	}
 	vctx := context.WithValue(ctx, ctxkey.ContentLength, fileStat.Size())
 	if caption, ok := sourceCaption(t.File); ok {
@@ -177,11 +168,7 @@ func (t *Task) Execute(ctx context.Context) error {
 		logger.Warnf("File skipped by storage (too large): %s", t.Path)
 		return nil
 	}
-	if t.UserID > 0 && (t.File.FileUniqueID() != "" || t.uploadHash != "") {
-		if derr := database.DedupRecordSaved(ctx, t.UserID, t.Storage.Name(), t.File.FileUniqueID(), t.uploadHash, fileStat.Size(), t.Path); derr != nil {
-			logger.Errorf("dedup record failed after upload (at-least-once duplicate risk): %v", derr)
-		}
-	}
+	database.RecordDedupAfterUpload(ctx, logger, t.UserID, t.Storage.Name(), t.File.FileUniqueID(), t.uploadHash, fileStat.Size(), t.Path)
 	return nil
 }
 

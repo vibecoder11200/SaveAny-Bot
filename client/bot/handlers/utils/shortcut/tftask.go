@@ -165,7 +165,7 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor st
 		storage storage.Storage
 		dirPath string
 	}
-	albumFiles := make(map[int64][]albumFile, 0)
+	albumFiles := make(map[int64][]albumFile)
 	for _, file := range files {
 		storName, matchedDirPath := applyRule(file)
 		fileStor := stor
@@ -223,17 +223,13 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor st
 				logger.Warnf("File %s is not in a group, skipping album handling", file.Name())
 				continue
 			}
-			fileDirPath := matchedDirPath.String()
-			if matchedDirPath.NeedNewForAlbum() {
-				fileDirPath = dirPath
-			}
-			if _, ok := albumFiles[groupId]; !ok {
-				albumFiles[groupId] = make([]albumFile, 0)
-			}
+			// Files routed to a new album directory all live under the
+			// caller's dirPath; the album subdirectory is named after the
+			// first file (loop below).
 			albumFiles[groupId] = append(albumFiles[groupId], albumFile{
 				file:    file,
 				storage: fileStor,
-				dirPath: fileDirPath,
+				dirPath: dirPath,
 			})
 		}
 	}

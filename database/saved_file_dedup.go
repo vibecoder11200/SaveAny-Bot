@@ -124,3 +124,39 @@ func DedupCheckHash(ctx context.Context, userID int64, storageName, localPath st
 func DedupRecordSaved(ctx context.Context, userID int64, storageName, fileUniqueID, contentHash string, size int64, storagePath string) error {
 	return RecordDedup(ctx, userID, storageName, fileUniqueID, contentHash, size, storagePath)
 }
+
+// DedupSkipByHash is the pre-upload content-hash gate shared by the save
+// tasks: it hashes the downloaded cache file, logs the outcome with the
+// standard fail-open wording, and returns skip=true when the save should be
+// dropped. On a miss the hash is returned so the caller can record it after a
+// successful upload without hashing twice. userID<=0 is a no-op, keeping the
+// "Task has no user ID" log out of packages that never dedup.
+func DedupSkipByHash(ctx context.Context, logger *log.Logger, userID int64, storageName, localPath, displayPath string) (skip bool, hash string) {
+	if userID <= 0 {
+		return false, ""
+	}
+	skip, hash, err := DedupCheckHash(ctx, userID, storageName, localPath)
+	switch {
+	case err != nil:
+		// Fail-open: an unreadable file or ledger error never blocks the save.
+		logger.Warnf("dedup hash check failed (fail-open, continuing upload): %v", err)
+		return false, ""
+	case skip:
+		logger.Infof("dedup skip (hash sha256:%s…): already saved to storage %s, path %s", hash[:min(12, len(hash))], storageName, displayPath)
+		return true, ""
+	}
+	return false, hash
+}
+
+// RecordDedupAfterUpload records a genuinely uploaded file in the dedup
+// ledger, logging a failure as an error: the upload already happened, so
+// at-least-once semantics say the next identical save may create a duplicate.
+// User-less tasks and files with neither a file-id nor a hash are no-ops.
+func RecordDedupAfterUpload(ctx context.Context, logger *log.Logger, userID int64, storageName, fileUniqueID, contentHash string, size int64, storagePath string) {
+	if userID <= 0 || (fileUniqueID == "" && contentHash == "") {
+		return
+	}
+	if err := DedupRecordSaved(ctx, userID, storageName, fileUniqueID, contentHash, size, storagePath); err != nil {
+		logger.Errorf("dedup record failed after upload (at-least-once duplicate risk): %v", err)
+	}
+}

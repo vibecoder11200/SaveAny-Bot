@@ -277,37 +277,27 @@ func (t *Task) uploadBatchResults(ctx context.Context, results []downloadResult)
 }
 
 func (t *Task) saveBatchItems(ctx context.Context, successElems []*TaskElement, items []storagetypes.BatchItem) error {
+	logger := log.FromContext(ctx)
 	t.startUpload(ctx)
+	var err error
 	if progressSaver, ok := successElems[0].Storage.(storage.StorageBatchProgressSaver); ok {
-		err := progressSaver.SaveBatchWithProgress(ctx, items, func(index int, uploaded, total int64) {
+		err = progressSaver.SaveBatchWithProgress(ctx, items, func(index int, uploaded, total int64) {
 			if index < 0 || index >= len(successElems) {
 				return
 			}
 			t.uploadCallback(ctx, successElems[index].ID)(uploaded, total)
 		})
-		if err != nil {
-			for _, elem := range successElems {
-				t.markItemFailed(ctx, elem.ID, FailureStageBatchUpload, err)
-			}
-			t.notifyStateChange(ctx)
-			return fmt.Errorf("failed to save batch: %w", err)
+	} else {
+		for i := range items {
+			items[i].Reader = ioutil.NewProgressReader(
+				items[i].Reader,
+				items[i].Size,
+				t.uploadCallback(ctx, successElems[i].ID),
+			)
 		}
-		for index, elem := range successElems {
-			t.uploadCallback(ctx, elem.ID)(items[index].Size, items[index].Size)
-			t.markItemCompleted(elem.ID)
-			t.recordDedupAfterUpload(ctx, log.FromContext(ctx), elem, items[index].Size)
-		}
-		t.notifyStateChange(ctx)
-		return nil
+		err = successElems[0].Storage.(storage.StorageBatchSaver).SaveBatch(ctx, items)
 	}
-	for i := range items {
-		items[i].Reader = ioutil.NewProgressReader(
-			items[i].Reader,
-			items[i].Size,
-			t.uploadCallback(ctx, successElems[i].ID),
-		)
-	}
-	if err := successElems[0].Storage.(storage.StorageBatchSaver).SaveBatch(ctx, items); err != nil {
+	if err != nil {
 		for _, elem := range successElems {
 			t.markItemFailed(ctx, elem.ID, FailureStageBatchUpload, err)
 		}
@@ -317,7 +307,7 @@ func (t *Task) saveBatchItems(ctx context.Context, successElems []*TaskElement, 
 	for index, elem := range successElems {
 		t.uploadCallback(ctx, elem.ID)(items[index].Size, items[index].Size)
 		t.markItemCompleted(elem.ID)
-		t.recordDedupAfterUpload(ctx, log.FromContext(ctx), elem, items[index].Size)
+		t.recordDedupAfterUpload(ctx, logger, elem, items[index].Size)
 	}
 	t.notifyStateChange(ctx)
 	return nil
@@ -457,19 +447,9 @@ func (t *Task) skipLargeElem(ctx context.Context, logger *log.Logger, elem *Task
 }
 
 // recordDedupAfterUpload indexes a genuinely uploaded file in the dedup
-// ledger. A recording failure is only logged: the upload happened, so
-// at-least-once semantics say the next identical save may create a duplicate.
+// ledger; see database.RecordDedupAfterUpload for the failure semantics.
 func (t *Task) recordDedupAfterUpload(ctx context.Context, logger *log.Logger, elem *TaskElement, size int64) {
-	if t.UserID <= 0 {
-		return
-	}
-	fid := elem.File.FileUniqueID()
-	if fid == "" && elem.uploadHash == "" {
-		return
-	}
-	if err := database.DedupRecordSaved(ctx, t.UserID, elem.Storage.Name(), fid, elem.uploadHash, size, elem.Path); err != nil {
-		logger.Errorf("dedup record failed after upload (at-least-once duplicate risk): %v", err)
-	}
+	database.RecordDedupAfterUpload(ctx, logger, t.UserID, elem.Storage.Name(), elem.File.FileUniqueID(), elem.uploadHash, size, elem.Path)
 }
 
 // dedupSkipByHash checks the downloaded cache file against the ledger and,
@@ -556,13 +536,7 @@ func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 	if downloadErr != nil {
 		t.markItemFailed(ctx, elem.ID, FailureStageDownload, downloadErr)
 		t.notifyStateChange(ctx)
-		if wdog.Stalled() {
-			return fmt.Errorf("download stalled: no data received for %s", dlutil.DownloadStallTimeout)
-		}
-		if meter.Crawled() {
-			return dlutil.CrawlError(meter.Absorbed())
-		}
-		return fmt.Errorf("failed to download file: %w", downloadErr)
+		return dlutil.DownloadFailure(downloadErr, wdog, meter)
 	}
 	if closeErr != nil {
 		t.markItemFailed(ctx, elem.ID, FailureStageCache, closeErr)
@@ -606,67 +580,7 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 		return fmt.Errorf("failed to download file: %w", err)
 	}
 	if elem.stream {
-		pr, pw := io.Pipe()
-		defer pr.Close()
-		errg, uploadCtx := errgroup.WithContext(ctx)
-		errg.Go(func() error {
-			err := elem.Storage.Save(uploadCtx, pr, elem.Path)
-			if err != nil {
-				t.markItemFailed(uploadCtx, elem.ID, FailureStageUpload, err)
-				t.notifyStateChange(ctx)
-			}
-			return err
-		})
-		streamWdog, streamWctx := dlutil.NewStallWatchdog(uploadCtx, dlutil.DownloadStallTimeout)
-		defer streamWdog.Close()
-		streamDlCtx, streamDlCancel := context.WithCancel(streamWctx)
-		defer streamDlCancel()
-		streamMeter := dlutil.NewFloodWaitMeter(streamDlCtx, streamDlCancel)
-		defer streamMeter.Close()
-		wr := ioutil.NewProgressWriter(pw, func(n int) {
-			streamWdog.Kick()
-			t.recordItemDownload(elem.ID, int64(n), time.Now())
-			downloaded := t.downloaded.Add(int64(n))
-			t.notifyProgress(ctx)
-			taskevent.Emit(ctx, taskevent.Event{
-				TaskID:          t.ID,
-				Phase:           taskevent.PhaseProgress,
-				TotalBytes:      t.totalSize,
-				DownloadedBytes: downloaded,
-			})
-		})
-		errg.Go(func() error {
-			defer pw.Close()
-			logger.Info("Starting file download in stream mode")
-			_, err := tdler.NewDownloaderWithMeter(elem.File, streamMeter).Stream(streamDlCtx, wr)
-			if err != nil {
-				if streamWdog.Stalled() {
-					err = fmt.Errorf("download stalled: no data received for %s", dlutil.DownloadStallTimeout)
-				} else if streamMeter.Crawled() {
-					err = dlutil.CrawlError(streamMeter.Absorbed())
-				} else {
-					err = fmt.Errorf("failed to download file: %w", err)
-				}
-				logger.Errorf("%v", err)
-				t.markItemFailed(uploadCtx, elem.ID, FailureStageDownload, err)
-				t.notifyStateChange(ctx)
-				pw.CloseWithError(err)
-			}
-			return err
-		})
-		if err := errg.Wait(); err != nil {
-			return fmt.Errorf("failed to download file in stream mode: %w", err)
-		}
-		// Streamed bytes are the uploaded bytes.
-		var streamedBytes int64
-		t.updateItem(elem.ID, func(item *itemProgressState) {
-			streamedBytes = item.downloaded
-		})
-		t.recordDownloadComplete(elem.ID, streamedBytes)
-		t.markItemCompleted(elem.ID)
-		t.notifyStateChange(ctx)
-		logger.Info("File downloaded successfully in stream mode")
-		return nil
+		return t.processStreamElem(ctx, elem, logger)
 	}
 	logger.Info("Starting file download")
 	localFile, err := fsutil.CreateFile(elem.localPath)
@@ -702,13 +616,7 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 	if err != nil {
 		t.markItemFailed(ctx, elem.ID, FailureStageDownload, err)
 		t.notifyStateChange(ctx)
-		if wdog.Stalled() {
-			return fmt.Errorf("download stalled: no data received for %s", dlutil.DownloadStallTimeout)
-		}
-		if meter.Crawled() {
-			return dlutil.CrawlError(meter.Absorbed())
-		}
-		return fmt.Errorf("failed to download file: %w", err)
+		return dlutil.DownloadFailure(err, wdog, meter)
 	}
 	logger.Info("File downloaded successfully")
 	if path.Ext(elem.FileName()) == "" {
@@ -786,4 +694,65 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 		t.notifyStateChange(vctx)
 	}
 	return err
+}
+
+// processStreamElem streams the element to storage while it downloads — no
+// cache file, so download and upload form one errgroup pipeline where a
+// failure on either side cancels the other. The streamed bytes are the
+// uploaded bytes.
+func (t *Task) processStreamElem(ctx context.Context, elem TaskElement, logger *log.Logger) error {
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	errg, uploadCtx := errgroup.WithContext(ctx)
+	errg.Go(func() error {
+		err := elem.Storage.Save(uploadCtx, pr, elem.Path)
+		if err != nil {
+			t.markItemFailed(uploadCtx, elem.ID, FailureStageUpload, err)
+			t.notifyStateChange(ctx)
+		}
+		return err
+	})
+	streamWdog, streamWctx := dlutil.NewStallWatchdog(uploadCtx, dlutil.DownloadStallTimeout)
+	defer streamWdog.Close()
+	streamDlCtx, streamDlCancel := context.WithCancel(streamWctx)
+	defer streamDlCancel()
+	streamMeter := dlutil.NewFloodWaitMeter(streamDlCtx, streamDlCancel)
+	defer streamMeter.Close()
+	wr := ioutil.NewProgressWriter(pw, func(n int) {
+		streamWdog.Kick()
+		t.recordItemDownload(elem.ID, int64(n), time.Now())
+		downloaded := t.downloaded.Add(int64(n))
+		t.notifyProgress(ctx)
+		taskevent.Emit(ctx, taskevent.Event{
+			TaskID:          t.ID,
+			Phase:           taskevent.PhaseProgress,
+			TotalBytes:      t.totalSize,
+			DownloadedBytes: downloaded,
+		})
+	})
+	errg.Go(func() error {
+		defer pw.Close()
+		logger.Info("Starting file download in stream mode")
+		_, err := tdler.NewDownloaderWithMeter(elem.File, streamMeter).Stream(streamDlCtx, wr)
+		if err != nil {
+			err = dlutil.DownloadFailure(err, streamWdog, streamMeter)
+			logger.Errorf("%v", err)
+			t.markItemFailed(uploadCtx, elem.ID, FailureStageDownload, err)
+			t.notifyStateChange(ctx)
+			pw.CloseWithError(err)
+		}
+		return err
+	})
+	if err := errg.Wait(); err != nil {
+		return fmt.Errorf("failed to download file in stream mode: %w", err)
+	}
+	var streamedBytes int64
+	t.updateItem(elem.ID, func(item *itemProgressState) {
+		streamedBytes = item.downloaded
+	})
+	t.recordDownloadComplete(elem.ID, streamedBytes)
+	t.markItemCompleted(elem.ID)
+	t.notifyStateChange(ctx)
+	logger.Info("File downloaded successfully in stream mode")
+	return nil
 }

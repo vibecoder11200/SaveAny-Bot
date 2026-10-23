@@ -448,7 +448,7 @@ func TestTryResendOutcomes(t *testing.T) {
 
 	// Fallback-eligible failure: falls through to the download+upload path,
 	// item untouched.
-	storFB := &fakeResendStorage{fakeBatchStorage: &fakeBatchStorage{}, sendErr: fmt.Errorf("%w: no peer", storagetypes.ErrResendPreflight)}
+	storFB := &fakeResendStorage{fakeBatchStorage: &fakeBatchStorage{name: "FakeResendFB"}, sendErr: fmt.Errorf("%w: no peer", storagetypes.ErrResendPreflight)}
 	elemFB := resendTestElem(storFB)
 	taskFB := NewBatchTGFileTask("r-fb", context.Background(), []TaskElement{*elemFB}, &recordingTracker{}, true)
 	taskFB.UserID = 1
@@ -460,8 +460,9 @@ func TestTryResendOutcomes(t *testing.T) {
 		t.Fatalf("phase = %v, want waiting (fallback leaves the item alone)", phase)
 	}
 
-	// Ambiguous failure: element terminally failed and accounted for.
-	storAmb := &fakeResendStorage{fakeBatchStorage: &fakeBatchStorage{}, sendErr: errors.New("connection reset mid-send")}
+	// Ambiguous failure: element terminally failed and accounted for. Distinct
+	// storage name: the ledger rows above must not satisfy this check.
+	storAmb := &fakeResendStorage{fakeBatchStorage: &fakeBatchStorage{name: "FakeResendAmb"}, sendErr: errors.New("connection reset mid-send")}
 	elemAmb := resendTestElem(storAmb)
 	taskAmb := NewBatchTGFileTask("r-amb", context.Background(), []TaskElement{*elemAmb}, &recordingTracker{}, true)
 	taskAmb.UserID = 1

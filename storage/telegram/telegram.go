@@ -134,11 +134,11 @@ func (t *Telegram) SendExistingMedia(ctx context.Context, sendCtx *ext.Context, 
 	if err := t.limiter.Wait(ctx); err != nil {
 		return fmt.Errorf("rate limit failed: %w", err)
 	}
-	option := message.Media(media)
+	var captionOpts []message.StyledTextOption
 	if caption != "" {
-		option = message.Media(media, styling.Plain(caption))
+		captionOpts = append(captionOpts, styling.Plain(caption))
 	}
-	_, err := sendCtx.Sender.To(peer).Media(ctx, option)
+	_, err := sendCtx.Sender.To(peer).Media(ctx, message.Media(media, captionOpts...))
 	if err != nil {
 		return err
 	}

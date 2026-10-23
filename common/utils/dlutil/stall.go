@@ -2,6 +2,7 @@ package dlutil
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -85,4 +86,18 @@ func (w *StallWatchdog) Close() {
 		w.cancel()
 		<-w.done
 	})
+}
+
+// DownloadFailure is the shared post-mortem for a download guarded by a
+// StallWatchdog and a FloodWaitMeter: it reports the most specific cause —
+// a silent stall, a flood-wait crawl — and falls back to wrapping the raw
+// error.
+func DownloadFailure(err error, wdog *StallWatchdog, meter *FloodWaitMeter) error {
+	if wdog.Stalled() {
+		return fmt.Errorf("download stalled: no data received for %s", DownloadStallTimeout)
+	}
+	if meter.Crawled() {
+		return CrawlError(meter.Absorbed())
+	}
+	return fmt.Errorf("failed to download file: %w", err)
 }

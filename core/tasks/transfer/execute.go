@@ -116,18 +116,11 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 			return fmt.Errorf("failed to seek temp file: %w", err)
 		}
 
-		var contentHash string
-		if t.UserID > 0 {
-			skip, hash, derr := database.DedupCheckHash(ctx, t.UserID, elem.TargetStorage.Name(), tempFile.Name())
-			switch {
-			case derr != nil:
-				logger.Warnf("dedup hash check failed (fail-open, continuing upload): %v", derr)
-			case skip:
-				logger.Infof("dedup skip (hash sha256:%s…): already saved to storage %s, path %s", hash[:min(12, len(hash))], elem.TargetStorage.Name(), storagePath)
-				return nil
-			default:
-				contentHash = hash
-			}
+		// Content-hash dedup: identical bytes under a different name are
+		// dropped before the upload.
+		dedupSkip, contentHash := database.DedupSkipByHash(ctx, logger, t.UserID, elem.TargetStorage.Name(), tempFile.Name(), storagePath)
+		if dedupSkip {
+			return nil
 		}
 
 		logger.Infof("Uploading file to storage (size: %d bytes)", size)
@@ -138,11 +131,7 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 			}
 			return fmt.Errorf("failed to upload file to storage: %w", err)
 		}
-		if t.UserID > 0 && contentHash != "" {
-			if derr := database.DedupRecordSaved(ctx, t.UserID, elem.TargetStorage.Name(), "", contentHash, size, storagePath); derr != nil {
-				logger.Errorf("dedup record failed after upload (at-least-once duplicate risk): %v", derr)
-			}
-		}
+		database.RecordDedupAfterUpload(ctx, logger, t.UserID, elem.TargetStorage.Name(), "", contentHash, size, storagePath)
 	}
 
 	t.uploaded.Add(size)
