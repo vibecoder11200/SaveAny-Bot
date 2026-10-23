@@ -150,6 +150,9 @@ func Start(ctx context.Context) error {
 	if cfg.Token == "" {
 		return fmt.Errorf("API server is enabled but no token is set; refusing to start insecurely")
 	}
+	if cfg.Host != "" && cfg.Host != "localhost" && cfg.Host != "127.0.0.1" && cfg.Host != "::1" {
+		log.FromContext(ctx).Warn("API server binds a non-loopback address; the bearer token travels unencrypted — front it with TLS or bind localhost and tunnel")
+	}
 
 	server := NewServer(ctx)
 	if err := server.Start(ctx); err != nil {

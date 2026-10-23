@@ -160,3 +160,21 @@ func RecordDedupAfterUpload(ctx context.Context, logger *log.Logger, userID int6
 		logger.Errorf("dedup record failed after upload (at-least-once duplicate risk): %v", err)
 	}
 }
+
+// PurgeDedupByStorage drops every dedup row the user has for the named
+// storage, returning the number of rows removed. Used after the user clears
+// a storage chat by hand: the ledger would otherwise keep blocking re-saves
+// of content it believes is already there.
+func PurgeDedupByStorage(ctx context.Context, userID int64, storageName string) (int64, error) {
+	if db == nil {
+		return 0, nil
+	}
+	res := db.WithContext(ctx).
+		Where("user_id = ? AND storage_name = ?", userID, storageName).
+		Delete(&SavedFileDedup{})
+	if res.Error != nil {
+		log.FromContext(ctx).Warnf("Failed to purge dedup rows for storage %s: %v", storageName, res.Error)
+		return 0, res.Error
+	}
+	return res.RowsAffected, nil
+}

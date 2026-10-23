@@ -29,7 +29,7 @@ token  = "your-token" # 鉴权 Token，强烈建议设置
 | `SAVEANY_API_TOKEN` | `api.token` |
 
 {{< hint warning >}}
-若 `token` 为空，API 服务将**不进行任何鉴权**即可访问，存在安全风险。
+若 `token` 为空，API 服务将**拒绝启动**。绑定非回环地址时会在日志中警告：Token 明文传输，请使用 TLS 反向代理，或绑定 `localhost` 后通过隧道访问。
 {{< /hint >}}
 
 ## 鉴权

@@ -16,8 +16,12 @@ Add or modify the following section in `config.toml`:
 enable = true
 host   = "0.0.0.0"   # Bind address, default 0.0.0.0
 port   = 8080         # Listen port, default 8080
-token  = "your-token" # Auth token — strongly recommended
+token  = "your-token" # Auth token — required: the server refuses to start without one
 ```
+
+The server refuses to start when `enable = true` and no token is set. Binding a
+non-loopback address logs a warning: the token travels unencrypted, so front the
+API with a TLS reverse proxy or bind `localhost` and tunnel in.
 
 You can also override these settings with environment variables (prefix `SAVEANY_`):
 

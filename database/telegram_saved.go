@@ -59,3 +59,22 @@ func TelegramSavedExists(ctx context.Context, storageName, storagePath string) b
 	}
 	return count > 0
 }
+
+// PurgeTelegramSavedByStorage drops every saved-path row for the named
+// telegram storage, returning the number of rows removed. Mirrors
+// PurgeDedupByStorage for the path-based ledger so a hand-cleared chat can
+// be re-saved cleanly. Storage names are globally unique, so no user
+// scoping is needed here.
+func PurgeTelegramSavedByStorage(ctx context.Context, storageName string) (int64, error) {
+	if db == nil {
+		return 0, nil
+	}
+	res := db.WithContext(ctx).
+		Where("storage_name = ?", storageName).
+		Delete(&TelegramSavedFile{})
+	if res.Error != nil {
+		log.FromContext(ctx).Warnf("Failed to purge saved-file rows for storage %s: %v", storageName, res.Error)
+		return 0, res.Error
+	}
+	return res.RowsAffected, nil
+}

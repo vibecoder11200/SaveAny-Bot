@@ -62,3 +62,28 @@ func TestTelegramSavedIndex(t *testing.T) {
 		t.Fatalf("empty path record: %v", err)
 	}
 }
+
+func TestPurgeTelegramSavedByStorage(t *testing.T) {
+	setupSavedIndexEnv(t)
+	ctx := context.Background()
+
+	if err := database.RecordTelegramSaved(ctx, "TG Hehe", "a/1.mp4", "a/2.mp4"); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if err := database.RecordTelegramSaved(ctx, "TG Zyro", "a/1.mp4"); err != nil {
+		t.Fatalf("record other: %v", err)
+	}
+	n, err := database.PurgeTelegramSavedByStorage(ctx, "TG Hehe")
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("purged %d rows, want 2", n)
+	}
+	if database.TelegramSavedExists(ctx, "TG Hehe", "a/1.mp4") {
+		t.Fatal("purged path must not exist")
+	}
+	if !database.TelegramSavedExists(ctx, "TG Zyro", "a/1.mp4") {
+		t.Fatal("other storage rows must survive")
+	}
+}

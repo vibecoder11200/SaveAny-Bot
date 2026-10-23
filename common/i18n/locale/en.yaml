@@ -67,6 +67,7 @@ bot:
       update: "Check for updates"
       syncpeers: "Sync peer chats (UserBot)"
       chatid: "Resolve a @username to its chat ID"
+      purge: "Clear the dedup/saved ledgers of a storage (after deleting messages by hand)"
     save_help_text: |
       Usage:
 
@@ -467,6 +468,12 @@ bot:
       usage: "Usage: /id @username"
       info: "Title: {{.Title}}\nType: {{.Type}}\nID: {{.ID}}"
       error_resolve_failed: "Failed to resolve username: {{.Error}}"
+    purge:
+      usage: "Usage: /purge <storage_name>\nClears this storage's dedup and saved-file records so content you deleted from it can be saved again."
+      info_done: "Cleared records for storage {{.Storage}}:\nDedup entries removed: {{.Deduped}}\nSaved-path entries removed: {{.SavedPath}}{{.Note}}"
+      error_not_found: "Storage not found: {{.Storage}}"
+      error_failed: "Purge failed: {{.Error}}"
+      error_partial: "\nWarning: saved-path purge failed: {{.Error}}"
     aria2:
       error_aria2_not_enabled: "Aria2 feature is not enabled in the configuration"
       error_aria2_client_init_failed: "Aria2 client initialization failed: {{.Error}}"

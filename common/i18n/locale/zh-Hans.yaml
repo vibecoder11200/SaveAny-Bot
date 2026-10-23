@@ -63,6 +63,7 @@ bot:
       lswatch: "列出监听的聊天(UserBot)"
       syncpeers: "同步对话列表(UserBot)"
       chatid: "解析 @username 为对话 ID"
+      purge: "清空某个存储的去重/已保存记录（手动删除消息后使用）"
       config: "修改配置"
       fnametmpl: "设置文件命名模板"
       help: "显示帮助"
@@ -468,6 +469,16 @@ bot:
       usage: "用法: /id @username"
       info: "名称: {{.Title}}\n类型: {{.Type}}\nID: {{.ID}}"
       error_resolve_failed: "解析用户名失败: {{.Error}}"
+    purge:
+      usage: "用法: /purge <存储名>
+清空该存储的去重与已保存记录，以便重新保存你手动删除过的内容。"
+      info_done: "已清空存储 {{.Storage}} 的记录:
+移除去重记录: {{.Deduped}} 条
+移除已保存路径记录: {{.SavedPath}} 条{{.Note}}"
+      error_not_found: "未找到存储: {{.Storage}}"
+      error_failed: "清空失败: {{.Error}}"
+      error_partial: "
+警告: 已保存路径清空失败: {{.Error}}"
     aria2:
       error_aria2_not_enabled: "Aria2 功能未启用, 请在配置文件中启用"
       error_aria2_client_init_failed: "Aria2 客户端初始化失败: {{.Error}}"

@@ -135,3 +135,40 @@ func TestDedupCheckHash(t *testing.T) {
 		t.Fatal("one byte different must not dedup")
 	}
 }
+
+func TestPurgeDedupByStorage(t *testing.T) {
+	setupDedupEnv(t)
+	ctx := context.Background()
+
+	mustRecord := func(user int64, stor, fid, path string) {
+		t.Helper()
+		if err := database.RecordDedup(ctx, user, stor, fid, "", 1, path); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+	}
+	mustRecord(1, "TG Hehe", "doc:1", "a/1.mp4")
+	mustRecord(1, "TG Hehe", "doc:2", "a/2.mp4")
+	mustRecord(2, "TG Hehe", "doc:3", "a/3.mp4") // other user, must survive
+	mustRecord(1, "TG Zyro", "doc:4", "a/4.mp4") // other storage, must survive
+
+	n, err := database.PurgeDedupByStorage(ctx, 1, "TG Hehe")
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("purged %d rows, want 2", n)
+	}
+	if database.DedupHasFileID(ctx, 1, "TG Hehe", "doc:1") {
+		t.Fatal("purged rows must not match")
+	}
+	if !database.DedupHasFileID(ctx, 2, "TG Hehe", "doc:3") {
+		t.Fatal("other user's rows must survive")
+	}
+	if !database.DedupHasFileID(ctx, 1, "TG Zyro", "doc:4") {
+		t.Fatal("other storage's rows must survive")
+	}
+	// Purging again is a clean no-op.
+	if n, err = database.PurgeDedupByStorage(ctx, 1, "TG Hehe"); err != nil || n != 0 {
+		t.Fatalf("re-purge: n=%d err=%v, want 0,nil", n, err)
+	}
+}
