@@ -98,3 +98,45 @@ func TestRefreshLocationUnsupportedMedia(t *testing.T) {
 		t.Fatal("expected error for unsupported media, got nil")
 	}
 }
+
+// RT-4: both constructors must carry the media's stable id — a hand-rolled
+// struct in one of them silently kills file-id dedup on every real call site.
+func TestFileUniqueIDFromBothConstructors(t *testing.T) {
+	doc, err := FromMedia(documentMedia([]byte("ref")), &tg.Client{})
+	if err != nil {
+		t.Fatalf("FromMedia: %v", err)
+	}
+	if got := doc.FileUniqueID(); got != "doc:1" {
+		t.Fatalf("FromMedia document FileUniqueID = %q, want doc:1", got)
+	}
+
+	photo, err := FromMediaMessage(photoMedia([]byte("ref")), &tg.Client{}, &tg.Message{ID: 5})
+	if err != nil {
+		t.Fatalf("FromMediaMessage: %v", err)
+	}
+	if got := photo.FileUniqueID(); got != "photo:7" {
+		t.Fatalf("FromMediaMessage photo FileUniqueID = %q, want photo:7", got)
+	}
+
+	docMsg, err := FromMediaMessage(documentMedia([]byte("ref")), &tg.Client{}, &tg.Message{ID: 6})
+	if err != nil {
+		t.Fatalf("FromMediaMessage: %v", err)
+	}
+	if got := docMsg.FileUniqueID(); got != "doc:1" {
+		t.Fatalf("FromMediaMessage document FileUniqueID = %q, want doc:1", got)
+	}
+
+	// RefreshLocation must not drop the id: dedup runs on the refreshed file.
+	if err := docMsg.RefreshLocation(documentMedia([]byte("fresh"))); err != nil {
+		t.Fatalf("RefreshLocation: %v", err)
+	}
+	if got := docMsg.FileUniqueID(); got != "doc:1" {
+		t.Fatalf("FileUniqueID after refresh = %q, want doc:1", got)
+	}
+
+	// Files built without media behind them have no id.
+	plain := NewTGFile(nil, &tg.Client{}, 1, "x.bin")
+	if got := plain.FileUniqueID(); got != "" {
+		t.Fatalf("plain NewTGFile FileUniqueID = %q, want empty", got)
+	}
+}

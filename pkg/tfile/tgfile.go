@@ -3,6 +3,7 @@ package tfile
 import (
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/celestix/gotgproto/functions"
 	"github.com/gotd/td/telegram/downloader"
@@ -15,6 +16,11 @@ type TGFile interface {
 	Size() int64
 	Name() string
 	SetName(name string)
+	// FileUniqueID identifies the source Telegram media across forwards and
+	// renames ("doc:<id>" / "photo:<id>"), playing the role of the Bot API's
+	// file_unique_id. Empty for files built without Telegram media behind
+	// them (e.g. constructed directly from a reader).
+	FileUniqueID() string
 }
 
 type TGFileMessage interface {
@@ -24,11 +30,12 @@ type TGFileMessage interface {
 }
 
 type tgFile struct {
-	location tg.InputFileLocationClass
-	size     int64
-	name     string
-	message  *tg.Message
-	dler     downloader.Client
+	location     tg.InputFileLocationClass
+	size         int64
+	name         string
+	message      *tg.Message
+	dler         downloader.Client
+	fileUniqueID string
 }
 
 func (f *tgFile) SetName(name string) {
@@ -68,6 +75,36 @@ func (f *tgFile) Dler() downloader.Client {
 	return f.dler
 }
 
+func (f *tgFile) FileUniqueID() string {
+	return f.fileUniqueID
+}
+
+// newTGFile is the single construction path for tgFile: every public
+// constructor funnels through it so no field (file_unique_id in particular)
+// can be silently dropped by a hand-rolled struct literal.
+func newTGFile(
+	location tg.InputFileLocationClass,
+	dler downloader.Client,
+	size int64,
+	name string,
+	message *tg.Message,
+	fileUniqueID string,
+	opts ...TGFileOption,
+) *tgFile {
+	f := &tgFile{
+		location:     location,
+		dler:         dler,
+		size:         size,
+		name:         SanitizeFileName(name),
+		message:      message,
+		fileUniqueID: fileUniqueID,
+	}
+	for _, opt := range opts {
+		opt(f)
+	}
+	return f
+}
+
 func NewTGFile(
 	location tg.InputFileLocationClass,
 	dler downloader.Client,
@@ -75,16 +112,7 @@ func NewTGFile(
 	name string,
 	opts ...TGFileOption,
 ) TGFile {
-	f := &tgFile{
-		location: location,
-		dler:     dler,
-		size:     size,
-		name:     SanitizeFileName(name),
-	}
-	for _, opt := range opts {
-		opt(f)
-	}
-	return f
+	return newTGFile(location, dler, size, name, nil, "", opts...)
 }
 
 // locationFromMedia builds a download location carrying the media's current
@@ -121,7 +149,35 @@ func locationFromMedia(media tg.MessageMediaClass) (tg.InputFileLocationClass, e
 	return nil, fmt.Errorf("unsupported media type: %T", media)
 }
 
+// fileUniqueIDFromMedia extracts the stable content identifier of the media
+// ("doc:<id>" / "photo:<id>"). Document and photo IDs live in separate
+// namespaces, hence the type prefix.
+func fileUniqueIDFromMedia(media tg.MessageMediaClass) string {
+	switch m := media.(type) {
+	case *tg.MessageMediaDocument:
+		if document, ok := m.Document.AsNotEmpty(); ok {
+			return "doc:" + strconv.FormatInt(document.ID, 10)
+		}
+	case *tg.MessageMediaPhoto:
+		if photo, ok := m.Photo.AsNotEmpty(); ok {
+			return "photo:" + strconv.FormatInt(photo.ID, 10)
+		}
+	}
+	return ""
+}
+
 func FromMedia(media tg.MessageMediaClass, client downloader.Client, opts ...TGFileOption) (TGFile, error) {
+	return buildFromMedia(media, client, nil, opts...)
+}
+
+func FromMediaMessage(media tg.MessageMediaClass, client downloader.Client, msg *tg.Message, opts ...TGFileOption) (TGFileMessage, error) {
+	return buildFromMedia(media, client, msg, opts...)
+}
+
+// buildFromMedia turns media into a file, attaching the source message when
+// one is given. Both public constructors funnel through here so the built
+// file always carries its file_unique_id.
+func buildFromMedia(media tg.MessageMediaClass, client downloader.Client, msg *tg.Message, opts ...TGFileOption) (*tgFile, error) {
 	switch m := media.(type) {
 	case *tg.MessageMediaDocument:
 		location, err := locationFromMedia(m)
@@ -139,14 +195,15 @@ func FromMedia(media tg.MessageMediaClass, client downloader.Client, opts ...TGF
 				break
 			}
 		}
-		file := NewTGFile(
+		return newTGFile(
 			location,
 			client,
 			document.Size,
 			fileName,
+			msg,
+			fileUniqueIDFromMedia(m),
 			opts...,
-		)
-		return file, nil
+		), nil
 	case *tg.MessageMediaPhoto:
 		photo, ok := m.Photo.AsNotEmpty()
 		if !ok {
@@ -160,28 +217,15 @@ func FromMedia(media tg.MessageMediaClass, client downloader.Client, opts ...TGF
 		if err != nil {
 			fileName = fmt.Sprintf("photo_%d.png", photo.GetID())
 		}
-		file := NewTGFile(
+		return newTGFile(
 			location,
 			client,
 			0, // Photo size is not available in InputPhotoFileLocation
 			fileName,
+			msg,
+			fileUniqueIDFromMedia(m),
 			opts...,
-		)
-		return file, nil
+		), nil
 	}
 	return nil, fmt.Errorf("unsupported media type: %T", media)
-}
-
-func FromMediaMessage(media tg.MessageMediaClass, client downloader.Client, msg *tg.Message, opts ...TGFileOption) (TGFileMessage, error) {
-	file, err := FromMedia(media, client, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return &tgFile{
-		location: file.Location(),
-		dler:     file.Dler(),
-		size:     file.Size(),
-		name:     file.Name(),
-		message:  msg,
-	}, nil
 }
