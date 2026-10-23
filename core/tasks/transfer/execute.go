@@ -11,7 +11,9 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/krau/SaveAny-Bot/config"
+	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/enums/ctxkey"
+	"github.com/krau/SaveAny-Bot/pkg/storagetypes"
 	"github.com/krau/SaveAny-Bot/pkg/taskevent"
 	"github.com/krau/SaveAny-Bot/storage"
 	"golang.org/x/sync/errgroup"
@@ -92,7 +94,13 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 	ctx = context.WithValue(ctx, ctxkey.ContentLength, size)
 
 	if config.C().Stream {
+		// Streamed bytes never touch this disk: no file to hash (RT-10).
+		logger.Debug("dedup: stream mode, content-hash check not possible")
 		if err := elem.TargetStorage.Save(ctx, reader, storagePath); err != nil {
+			if errors.Is(err, storagetypes.ErrSkippedLarge) {
+				logger.Warnf("File skipped by storage (too large): %s", storagePath)
+				return nil
+			}
 			return fmt.Errorf("failed to upload file to storage: %w", err)
 		}
 	} else {
@@ -108,9 +116,32 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 			return fmt.Errorf("failed to seek temp file: %w", err)
 		}
 
+		var contentHash string
+		if t.UserID > 0 {
+			skip, hash, derr := database.DedupCheckHash(ctx, t.UserID, elem.TargetStorage.Name(), tempFile.Name())
+			switch {
+			case derr != nil:
+				logger.Warnf("dedup hash check failed (fail-open, continuing upload): %v", derr)
+			case skip:
+				logger.Infof("dedup skip (hash sha256:%s…): already saved to storage %s, path %s", hash[:min(12, len(hash))], elem.TargetStorage.Name(), storagePath)
+				return nil
+			default:
+				contentHash = hash
+			}
+		}
+
 		logger.Infof("Uploading file to storage (size: %d bytes)", size)
 		if err := elem.TargetStorage.Save(ctx, tempFile, storagePath); err != nil {
+			if errors.Is(err, storagetypes.ErrSkippedLarge) {
+				logger.Warnf("File skipped by storage (too large): %s", storagePath)
+				return nil
+			}
 			return fmt.Errorf("failed to upload file to storage: %w", err)
+		}
+		if t.UserID > 0 && contentHash != "" {
+			if derr := database.DedupRecordSaved(ctx, t.UserID, elem.TargetStorage.Name(), "", contentHash, size, storagePath); derr != nil {
+				logger.Errorf("dedup record failed after upload (at-least-once duplicate risk): %v", derr)
+			}
 		}
 	}
 

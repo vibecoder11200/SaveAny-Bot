@@ -21,6 +21,8 @@ type Task struct {
 	Storage     storage.Storage
 	StorPath    string
 	Progress    ProgressTracker
+	// UserID scopes the content dedup ledger; 0 (HTTP API) disables dedup.
+	UserID int64
 }
 
 // Title implements core.Executable.

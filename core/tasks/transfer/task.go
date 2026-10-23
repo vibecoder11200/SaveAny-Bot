@@ -30,6 +30,8 @@ type Task struct {
 	elems        []TaskElement
 	Progress     ProgressTracker
 	IgnoreErrors bool
+	// UserID scopes the content dedup ledger; 0 (HTTP API) disables dedup.
+	UserID       int64
 	uploaded     atomic.Int64
 	totalSize    int64
 	processing   map[string]TaskElementInfo

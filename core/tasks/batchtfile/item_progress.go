@@ -26,6 +26,14 @@ const (
 	ItemPhaseCompleted
 	ItemPhaseFailed
 	ItemPhaseStopped
+	// ItemPhaseDeduped marks an element skipped because identical content was
+	// already saved to the same storage (file-id or hash ledger hit). It is a
+	// success-shaped terminal state, reported separately from failures.
+	ItemPhaseDeduped
+	// ItemPhaseSkipped marks an element a storage dropped by policy (too
+	// large with SkipLarge): not uploaded, not failed — intentionally not
+	// saved, reported alongside the name-conflict skips.
+	ItemPhaseSkipped
 )
 
 // FailureStage identifies the operation that failed for one batch item.
@@ -250,7 +258,7 @@ func (t *Task) markItemRetry(id string, stage FailureStage, attempt, limit int, 
 
 func (t *Task) markItemFailed(ctx context.Context, id string, stage FailureStage, err error) {
 	t.updateItem(id, func(item *itemProgressState) {
-		if item.phase == ItemPhaseFailed || item.phase == ItemPhaseCompleted {
+		if item.phase == ItemPhaseFailed || item.phase == ItemPhaseCompleted || item.phase == ItemPhaseDeduped {
 			return
 		}
 		if errors.Is(ctx.Err(), context.Canceled) {
@@ -276,6 +284,54 @@ func (t *Task) markItemCompleted(id string) {
 	})
 }
 
+// markItemDeduped moves an item to the deduplicated terminal state: nothing
+// was transferred, and the item is neither a success nor a failure.
+func (t *Task) markItemDeduped(id string) {
+	t.updateItem(id, func(item *itemProgressState) {
+		item.phase = ItemPhaseDeduped
+		item.failureStage = FailureStageNone
+		item.err = ""
+		item.retryAttempt = 0
+		item.retryLimit = 0
+	})
+}
+
+// markItemSkipped records an item the storage dropped by policy (too large):
+// nothing was uploaded, but it is an intentional skip, not a failure.
+func (t *Task) markItemSkipped(id string) {
+	t.updateItem(id, func(item *itemProgressState) {
+		item.phase = ItemPhaseSkipped
+		item.failureStage = FailureStageNone
+		item.err = ""
+	})
+}
+
+// DedupedCount reports how many elements were skipped as duplicates.
+func (t *Task) DedupedCount() int {
+	t.itemMu.RLock()
+	defer t.itemMu.RUnlock()
+	count := 0
+	for i := range t.itemStates {
+		if t.itemStates[i].phase == ItemPhaseDeduped {
+			count++
+		}
+	}
+	return count
+}
+
+// SkippedRuntimeCount reports how many elements storages dropped by policy.
+func (t *Task) SkippedRuntimeCount() int {
+	t.itemMu.RLock()
+	defer t.itemMu.RUnlock()
+	count := 0
+	for i := range t.itemStates {
+		if t.itemStates[i].phase == ItemPhaseSkipped {
+			count++
+		}
+	}
+	return count
+}
+
 func (t *Task) finishItems(err error) {
 	if err == nil {
 		return
@@ -284,7 +340,8 @@ func (t *Task) finishItems(err error) {
 	defer t.itemMu.Unlock()
 	for i := range t.itemStates {
 		item := &t.itemStates[i]
-		if item.phase == ItemPhaseCompleted || item.phase == ItemPhaseFailed {
+		if item.phase == ItemPhaseCompleted || item.phase == ItemPhaseFailed ||
+			item.phase == ItemPhaseDeduped || item.phase == ItemPhaseSkipped {
 			continue
 		}
 		item.phase = ItemPhaseStopped

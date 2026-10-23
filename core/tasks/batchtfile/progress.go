@@ -33,6 +33,9 @@ type Progress struct {
 	lastText     string
 	done         bool
 	skippedFiles []string
+	// dedupedFiles were filtered out at task creation because identical
+	// content was already saved; they never became elements.
+	dedupedFiles []string
 	edits        *tgutil.ProgressEditQueue
 }
 
@@ -80,7 +83,7 @@ func (p *Progress) render(ctx context.Context, info TaskInfo, priority bool) {
 	if !priority && !p.lastUpdateAt.IsZero() && now.Sub(p.lastUpdateAt) < progressRenderInterval {
 		return
 	}
-	message := buildBatchProgressMessage(info, p.skippedFiles, visibleActiveItems())
+	message := buildBatchProgressMessage(info, p.skippedFiles, p.dedupedFiles, visibleActiveItems())
 	if message.Err != nil {
 		log.FromContext(ctx).Errorf("Failed to render batch progress message: %v", message.Err)
 		return
@@ -100,7 +103,7 @@ func (p *Progress) OnDone(ctx context.Context, info TaskInfo, err error) {
 		return
 	}
 	p.done = true
-	message := buildBatchDoneMessage(ctx, info, p.skippedFiles, err)
+	message := buildBatchDoneMessage(ctx, info, p.skippedFiles, p.dedupedFiles, err)
 	if message.Err != nil {
 		log.FromContext(ctx).Errorf("Failed to render final batch progress message: %v", message.Err)
 		return
@@ -130,19 +133,20 @@ func buildBatchEditMessageRequest(messageID int, taskID string, message rendered
 	return req
 }
 
-func buildBatchProgressText(info TaskInfo, skipped []string, activeLimit int) string {
-	return buildBatchProgressMessage(info, skipped, activeLimit).Text
+func buildBatchProgressText(info TaskInfo, skipped, deduped []string, activeLimit int) string {
+	return buildBatchProgressMessage(info, skipped, deduped, activeLimit).Text
 }
 
-func buildBatchProgressMessage(info TaskInfo, skipped []string, activeLimit int) renderedBatchMessage {
+func buildBatchProgressMessage(info TaskInfo, skipped, deduped []string, activeLimit int) renderedBatchMessage {
 	items := info.Items()
-	completed, waiting, downloaded, failed := itemCounts(items)
+	completed, waiting, downloaded, failed, dedupedRuntime, skippedRuntime := itemCounts(items)
 	downloadSpeed, uploadSpeed := aggregateSpeeds(items)
 	if activeLimit < 1 {
 		activeLimit = 1
 	}
 
-	total := len(items) + len(skipped)
+	dedupedCount := dedupedRuntime + len(deduped)
+	total := len(items) + len(skipped) + len(deduped)
 	downloadSpeedText := formatSpeed(downloadSpeed)
 	uploadSpeedText := formatSpeed(uploadSpeed)
 	header := localizedProgressMarkup(i18nk.BotMsgProgressBatchStatusHeader, map[string]any{
@@ -176,27 +180,34 @@ func buildBatchProgressMessage(info TaskInfo, skipped []string, activeLimit int)
 		markup.WriteString("\n")
 		markup.WriteString(localizedProgressMarkup(i18nk.BotMsgProgressBatchSummaryFailed, map[string]any{"Count": failed}))
 	}
-	if len(skipped) > 0 {
+	if dedupedCount > 0 {
 		markup.WriteString("\n")
-		markup.WriteString(localizedProgressMarkup(i18nk.BotMsgProgressBatchSummarySkipped, map[string]any{"Count": len(skipped)}))
+		markup.WriteString(localizedProgressMarkup(i18nk.BotMsgProgressBatchSummaryDeduped, map[string]any{"Count": dedupedCount}))
+	}
+	if len(skipped)+skippedRuntime > 0 {
+		markup.WriteString("\n")
+		markup.WriteString(localizedProgressMarkup(i18nk.BotMsgProgressBatchSummarySkipped, map[string]any{"Count": len(skipped) + skippedRuntime}))
 	}
 	return completeBatchMessage(markup.String())
 }
 
-func buildBatchDoneMarkup(ctx context.Context, info TaskInfo, skipped []string, err error) string {
+func buildBatchDoneMarkup(ctx context.Context, info TaskInfo, skipped, deduped []string, err error) string {
 	items := info.Items()
 	totalSize := info.ActualTotalSize()
 	if totalSize == 0 {
 		totalSize = info.TotalSize()
 	}
 	if err == nil {
-		completed, _, _, failed := itemCounts(items)
-		// Report per-element failures instead of full completion.
-		totalSkipped := len(skipped) + failed
-		if totalSkipped > 0 {
+		completed, _, _, failed, dedupedRuntime, skippedRuntime := itemCounts(items)
+		dedupedTotal := dedupedRuntime + len(deduped)
+		skippedTotal := len(skipped) + skippedRuntime
+		// Report per-element outcomes instead of full completion.
+		if dedupedTotal > 0 || skippedTotal > 0 || failed > 0 {
 			return localizedProgressMarkup(i18nk.BotMsgProgressBatchDoneWithSkipped, map[string]any{
 				"Success": completed,
-				"Skipped": totalSkipped,
+				"Deduped": dedupedTotal,
+				"Skipped": skippedTotal,
+				"Failed":  failed,
 				"Size":    dlutil.FormatSize(totalSize),
 			})
 		}
@@ -205,14 +216,15 @@ func buildBatchDoneMarkup(ctx context.Context, info TaskInfo, skipped []string, 
 			"Size":  dlutil.FormatSize(totalSize),
 		})
 	}
-	completed, _, _, failed := itemCounts(items)
-	incomplete := max(len(items)-completed-failed, 0)
+	completed, _, _, failed, dedupedRuntime, skippedRuntime := itemCounts(items)
+	incomplete := max(len(items)-completed-failed-dedupedRuntime-skippedRuntime, 0)
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return localizedProgressMarkup(i18nk.BotMsgProgressBatchCanceled, map[string]any{
-			"Total":      len(items) + len(skipped),
+			"Total":      len(items) + len(skipped) + len(deduped),
 			"Completed":  completed,
+			"Deduped":    dedupedRuntime + len(deduped),
 			"Incomplete": incomplete,
-			"Skipped":    len(skipped),
+			"Skipped":    len(skipped) + skippedRuntime,
 		})
 	}
 
@@ -252,8 +264,8 @@ func buildBatchDoneMarkup(ctx context.Context, info TaskInfo, skipped []string, 
 	})
 }
 
-func buildBatchDoneMessage(ctx context.Context, info TaskInfo, skipped []string, err error) renderedBatchMessage {
-	return completeBatchMessage(buildBatchDoneMarkup(ctx, info, skipped, err))
+func buildBatchDoneMessage(ctx context.Context, info TaskInfo, skipped, deduped []string, err error) renderedBatchMessage {
+	return completeBatchMessage(buildBatchDoneMarkup(ctx, info, skipped, deduped, err))
 }
 
 func formatActiveItemMarkup(item TaskItemProgress, total int) string {
@@ -328,7 +340,7 @@ func completeBatchMessage(markup string) renderedBatchMessage {
 	return renderedBatchMessage{Text: text, Entities: entities, Err: err}
 }
 
-func itemCounts(items []TaskItemProgress) (completed, waiting, downloaded, failed int) {
+func itemCounts(items []TaskItemProgress) (completed, waiting, downloaded, failed, deduped, skipped int) {
 	for _, item := range items {
 		switch item.Phase {
 		case ItemPhaseCompleted:
@@ -339,6 +351,10 @@ func itemCounts(items []TaskItemProgress) (completed, waiting, downloaded, faile
 			downloaded++
 		case ItemPhaseFailed:
 			failed++
+		case ItemPhaseDeduped:
+			deduped++
+		case ItemPhaseSkipped:
+			skipped++
 		}
 	}
 	return
@@ -493,13 +509,17 @@ func visibleActiveItems() int {
 }
 
 func NewProgressTracker(messageID int, chatID int64) ProgressTracker {
-	return NewProgressTrackerWithSkipped(messageID, chatID, nil)
+	return NewProgressTrackerWithSkipped(messageID, chatID, nil, nil)
 }
 
-func NewProgressTrackerWithSkipped(messageID int, chatID int64, skippedFiles []string) ProgressTracker {
+// NewProgressTrackerWithSkipped builds a tracker that reports files skipped
+// by name conflict and files deduplicated at task creation alongside the
+// live element progress.
+func NewProgressTrackerWithSkipped(messageID int, chatID int64, skippedFiles, dedupedFiles []string) ProgressTracker {
 	return &Progress{
 		MessageID:    messageID,
 		ChatID:       chatID,
 		skippedFiles: skippedFiles,
+		dedupedFiles: dedupedFiles,
 	}
 }

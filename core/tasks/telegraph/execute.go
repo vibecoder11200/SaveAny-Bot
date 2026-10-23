@@ -2,6 +2,7 @@ package telegraph
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -11,6 +12,8 @@ import (
 	"github.com/duke-git/lancet/v2/retry"
 	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
 	"github.com/krau/SaveAny-Bot/config"
+	"github.com/krau/SaveAny-Bot/database"
+	"github.com/krau/SaveAny-Bot/pkg/storagetypes"
 	"github.com/krau/SaveAny-Bot/pkg/taskevent"
 	"golang.org/x/sync/errgroup"
 )
@@ -56,6 +59,7 @@ func (t *Task) Execute(ctx context.Context) error {
 }
 
 func (t *Task) processPic(ctx context.Context, picUrl string, index int) error {
+	logger := log.FromContext(ctx)
 	retryOpts := []retry.Option{
 		retry.Context(ctx),
 		retry.RetryTimes(uint(config.C().Retry)),
@@ -76,7 +80,6 @@ func (t *Task) processPic(ctx context.Context, picUrl string, index int) error {
 			}
 			defer func() {
 				if err := cacheFile.CloseAndRemove(); err != nil {
-					logger := log.FromContext(ctx)
 					logger.Errorf("Failed to close and remove cache file for picture %s: %v", filename, err)
 				}
 			}()
@@ -88,14 +91,43 @@ func (t *Task) processPic(ctx context.Context, picUrl string, index int) error {
 			if err != nil {
 				return fmt.Errorf("failed to seek cache file for picture %s: %w", filename, err)
 			}
+			var contentHash string
+			if t.UserID > 0 {
+				skip, hash, derr := database.DedupCheckHash(ctx, t.UserID, t.Stor.Name(), cacheFile.Name())
+				switch {
+				case derr != nil:
+					logger.Warnf("dedup hash check failed (fail-open, continuing upload): %v", derr)
+				case skip:
+					logger.Infof("dedup skip (hash sha256:%s…): already saved to storage %s, path %s", hash[:min(12, len(hash))], t.Stor.Name(), filename)
+					return nil
+				default:
+					contentHash = hash
+				}
+			}
+			skippedLarge := false
 			err = t.Stor.Save(ctx, cacheFile, path.Join(t.StorPath, filename))
+			if errors.Is(err, storagetypes.ErrSkippedLarge) {
+				logger.Warnf("File skipped by storage (too large): %s", filename)
+				skippedLarge = true
+				err = nil
+			}
 			if err != nil {
 				return fmt.Errorf("failed to save picture %s: %w", filename, err)
 			}
-		} else {
-			err = t.Stor.Save(ctx, body, path.Join(t.StorPath, filename))
+			if !skippedLarge && t.UserID > 0 && contentHash != "" {
+				if derr := database.DedupRecordSaved(ctx, t.UserID, t.Stor.Name(), "", contentHash, 0, path.Join(t.StorPath, filename)); derr != nil {
+					logger.Errorf("dedup record failed after upload (at-least-once duplicate risk): %v", derr)
+				}
+			}
+			return nil
 		}
-
+		// Streamed bytes never touch this disk: no file to hash (RT-10).
+		logger.Debug("dedup: stream mode, content-hash check not possible")
+		err = t.Stor.Save(ctx, body, path.Join(t.StorPath, filename))
+		if errors.Is(err, storagetypes.ErrSkippedLarge) {
+			logger.Warnf("File skipped by storage (too large): %s", filename)
+			return nil
+		}
 		if err != nil {
 			return fmt.Errorf("failed to save picture %s: %w", filename, err)
 		}

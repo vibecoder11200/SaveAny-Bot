@@ -13,7 +13,9 @@ import (
 	ytdlp "github.com/lrstanley/go-ytdlp"
 
 	"github.com/krau/SaveAny-Bot/config"
+	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/enums/ctxkey"
+	"github.com/krau/SaveAny-Bot/pkg/storagetypes"
 )
 
 // Execute implements core.Executable.
@@ -202,8 +204,32 @@ func (t *Task) transferFile(ctx context.Context, tempDir, relPath string) error 
 
 	logger.Infof("Transferring file %s to %s:%s", relPath, t.Storage.Name(), destPath)
 
+	var contentHash string
+	if t.UserID > 0 {
+		skip, hash, derr := database.DedupCheckHash(ctx, t.UserID, t.Storage.Name(), filePath)
+		switch {
+		case derr != nil:
+			logger.Warnf("dedup hash check failed (fail-open, continuing upload): %v", derr)
+		case skip:
+			logger.Infof("dedup skip (hash sha256:%s…): already saved to storage %s, path %s", hash[:min(12, len(hash))], t.Storage.Name(), destPath)
+			return nil
+		default:
+			contentHash = hash
+		}
+	}
+
 	if err := t.Storage.Save(ctx, f, destPath); err != nil {
+		if errors.Is(err, storagetypes.ErrSkippedLarge) {
+			logger.Warnf("File skipped by storage (too large): %s", relPath)
+			return nil
+		}
 		return fmt.Errorf("failed to save file %s to storage: %w", relPath, err)
+	}
+
+	if t.UserID > 0 && contentHash != "" {
+		if derr := database.DedupRecordSaved(ctx, t.UserID, t.Storage.Name(), "", contentHash, fileInfo.Size(), destPath); derr != nil {
+			logger.Errorf("dedup record failed after upload (at-least-once duplicate risk): %v", derr)
+		}
 	}
 
 	logger.Infof("Successfully transferred file %s", relPath)

@@ -222,6 +222,7 @@ func handleTransferCallback(ctx *ext.Context, userID int64, targetStorage storag
 		transfer.NewProgressTracker(msgID, userID),
 		true, // IgnoreErrors
 	)
+	task.UserID = userID
 
 	if err := core.AddTask(injectCtx, task); err != nil {
 		ctx.EditMessage(userID, &tg.MessagesEditMessageRequest{

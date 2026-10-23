@@ -22,6 +22,7 @@ type Task struct {
 	Ctx        context.Context
 	Stor       storage.Storage
 	StorPath   string
+	UserID     int64 // requesting user's chat ID; 0 when created without one (HTTP API)
 	item       *parser.Item
 	httpClient *http.Client
 	progress   ProgressTracker

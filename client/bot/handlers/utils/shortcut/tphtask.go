@@ -36,6 +36,7 @@ func CreateAndAddtelegraphWithEdit(
 		tphutil.DefaultClient(),
 		tphtask.NewProgress(trackMsgID, userID),
 	)
+	task.UserID = userID
 	if err := core.AddTask(injectCtx, task); err != nil {
 		log.FromContext(ctx).Errorf("Failed to add task: %s", err)
 		ctx.EditMessage(userID, &tg.MessagesEditMessageRequest{

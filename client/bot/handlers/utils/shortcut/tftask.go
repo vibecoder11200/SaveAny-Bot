@@ -155,6 +155,7 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor st
 
 	skipped := make([]string, 0)
 	conflicts := make([]string, 0)
+	deduped := make([]string, 0)
 	elems := make([]batchtfile.TaskElement, 0, len(files))
 	type albumFile struct {
 		file    tfile.TGFileMessage
@@ -190,6 +191,13 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor st
 					skipped = append(skipped, file.Name())
 					continue
 				}
+			}
+			// Name conflict keeps priority; file-id dedup only fires for
+			// content this user has not already saved to this storage.
+			if fid := file.FileUniqueID(); fid != "" && database.DedupHasFileID(ctx, user.ChatID, fileStor.Name(), fid) {
+				log.Infof("dedup skip (file-id %s): already saved to storage %s, path %s", fid, fileStor.Name(), storPath)
+				deduped = append(deduped, file.Name())
+				continue
 			}
 			elem, err := batchtfile.NewTaskElement(fileStor, storPath, file)
 			if err != nil {
@@ -244,6 +252,11 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor st
 					continue
 				}
 			}
+			if fid := af.file.FileUniqueID(); fid != "" && database.DedupHasFileID(ctx, user.ChatID, albumStor.Name(), fid) {
+				log.Infof("dedup skip (file-id %s): already saved to storage %s, path %s", fid, albumStor.Name(), afstorPath)
+				deduped = append(deduped, af.file.Name())
+				continue
+			}
 			elem, err := batchtfile.NewTaskElement(albumStor, afstorPath, af.file)
 			if err != nil {
 				logger.Errorf("Failed to create task element for album file: %s", err)
@@ -269,16 +282,14 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor st
 	}
 	if len(elems) == 0 {
 		ctx.EditMessage(userID, &tg.MessagesEditMessageRequest{
-			ID: trackMsgID,
-			Message: i18n.T(i18nk.BotMsgCommonInfoAllConflictFilesSkipped, map[string]any{
-				"Skipped": strings.Join(skipped, "\n"),
-			}),
+			ID:          trackMsgID,
+			Message:     buildAllDedupedMessage(deduped, skipped),
 			ReplyMarkup: nil,
 		})
 		return dispatcher.EndGroups
 	}
 	taskid := xid.New().String()
-	task := batchtfile.NewBatchTGFileTask(taskid, injectCtx, elems, batchtfile.NewProgressTrackerWithSkipped(trackMsgID, userID, skipped), true)
+	task := batchtfile.NewBatchTGFileTask(taskid, injectCtx, elems, batchtfile.NewProgressTrackerWithSkipped(trackMsgID, userID, skipped, deduped), true)
 	task.UserID = userID
 	if err := core.AddTask(injectCtx, task); err != nil {
 		logger.Errorf("Failed to add batch task: %s", err)
@@ -292,7 +303,7 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor st
 	}
 	ctx.EditMessage(userID, &tg.MessagesEditMessageRequest{
 		ID:          trackMsgID,
-		Message:     buildBatchAddedMessage(len(elems), skipped),
+		Message:     buildBatchAddedMessage(len(elems), skipped, deduped),
 		ReplyMarkup: nil,
 	})
 	return dispatcher.EndGroups
@@ -325,14 +336,38 @@ func selectedConflictStrategy(strategies []string) string {
 	return strategies[0]
 }
 
-func buildBatchAddedMessage(count int, skipped []string) string {
-	if len(skipped) == 0 {
+func buildBatchAddedMessage(count int, skipped, deduped []string) string {
+	switch {
+	case len(skipped) > 0 && len(deduped) > 0:
+		return i18n.T(i18nk.BotMsgCommonInfoBatchTasksAddedWithSkippedAndDedup, map[string]any{
+			"Count":   count,
+			"Skipped": strings.Join(skipped, "\n"),
+			"Deduped": strings.Join(deduped, "\n"),
+		})
+	case len(deduped) > 0:
+		return i18n.T(i18nk.BotMsgCommonInfoBatchTasksAddedWithDedup, map[string]any{
+			"Count":   count,
+			"Deduped": strings.Join(deduped, "\n"),
+		})
+	case len(skipped) > 0:
+		return i18n.T(i18nk.BotMsgCommonInfoBatchTasksAddedWithSkipped, map[string]any{
+			"Count":   count,
+			"Skipped": strings.Join(skipped, "\n"),
+		})
+	default:
 		return i18n.T(i18nk.BotMsgCommonInfoBatchTasksAdded, map[string]any{
 			"Count": count,
 		})
 	}
-	return i18n.T(i18nk.BotMsgCommonInfoBatchTasksAddedWithSkipped, map[string]any{
-		"Count":   count,
+}
+
+func buildAllDedupedMessage(deduped, skipped []string) string {
+	if len(deduped) > 0 {
+		return i18n.T(i18nk.BotMsgCommonInfoAllDedupFilesSkipped, map[string]any{
+			"Deduped": strings.Join(deduped, "\n"),
+		})
+	}
+	return i18n.T(i18nk.BotMsgCommonInfoAllConflictFilesSkipped, map[string]any{
 		"Skipped": strings.Join(skipped, "\n"),
 	})
 }

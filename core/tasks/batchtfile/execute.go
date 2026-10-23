@@ -15,8 +15,10 @@ import (
 	"github.com/krau/SaveAny-Bot/common/tdler"
 	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
 	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
+	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/common/utils/ioutil"
 	"github.com/krau/SaveAny-Bot/config"
+	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/enums/ctxkey"
 	"github.com/krau/SaveAny-Bot/pkg/storagetypes"
 	"github.com/krau/SaveAny-Bot/pkg/taskevent"
@@ -37,6 +39,13 @@ func (g executionGroup) usesBatchSaver() bool {
 // errSkippedExists marks an element that SkipIfExists found already stored;
 // it is filtered out of the upload pipeline, not treated as a failure.
 var errSkippedExists = errors.New("file already exists")
+
+// downloadResult pairs an element with its download outcome, kept in the
+// group's original order so batch upload attribution stays aligned.
+type downloadResult struct {
+	elem *TaskElement
+	err  error
+}
 
 func (t *Task) Execute(ctx context.Context) error {
 	logger := log.FromContext(ctx).WithPrefix(fmt.Sprintf("batch_file[%s]", t.ID))
@@ -147,10 +156,6 @@ func (t *Task) processBatch(ctx context.Context, group executionGroup) error {
 		}
 	}()
 
-	type downloadResult struct {
-		elem *TaskElement
-		err  error
-	}
 	results := make([]downloadResult, len(group.elems))
 	var resultsMu sync.Mutex
 
@@ -178,8 +183,15 @@ func (t *Task) processBatch(ctx context.Context, group executionGroup) error {
 	if err := eg.Wait(); err != nil {
 		return err
 	}
+	return t.uploadBatchResults(ctx, results)
+}
 
-	successElems := make([]*TaskElement, 0, len(group.elems))
+// uploadBatchResults classifies per-element download outcomes and uploads the
+// successful remainder as one batch. Elements that reported errSkippedExists
+// (name-conflict recovery skip or file-id dedup) are left out: they were
+// already marked completed or deduplicated at skip time.
+func (t *Task) uploadBatchResults(ctx context.Context, results []downloadResult) error {
+	successElems := make([]*TaskElement, 0, len(results))
 	for _, r := range results {
 		if r.err == nil {
 			successElems = append(successElems, r.elem)
@@ -188,18 +200,43 @@ func (t *Task) processBatch(ctx context.Context, group executionGroup) error {
 	if len(successElems) == 0 {
 		skipped := 0
 		for _, r := range results {
-			if errors.Is(r.err, errSkippedExists) {
+			if errors.Is(r.err, errSkippedExists) || errors.Is(r.err, storagetypes.ErrSkippedLarge) {
 				skipped++
 			}
 		}
 		if skipped > 0 && skipped == len(results) {
-			// Every element already exists (recovery skip): nothing to do.
+			// Every element was skipped (already exists / deduped / too
+			// large): nothing to do.
 			return nil
 		}
 		if skipped > 0 {
 			return fmt.Errorf("%d element(s) failed to download (%d skipped as already existing)", len(results)-skipped, skipped)
 		}
 		return fmt.Errorf("all elements failed to download")
+	}
+
+	logger := log.FromContext(ctx)
+	// Hash dedup: filter elements and their future items in one lockstep pass
+	// so the progress callback attribution between the two slices stays
+	// aligned (RT-9). Hashing a 2GB file takes ~1-2s — negligible next to the
+	// download that produced it.
+	if t.UserID > 0 {
+		filtered := make([]*TaskElement, 0, len(successElems))
+		deduped := 0
+		for _, elem := range successElems {
+			if t.dedupSkipByHash(ctx, logger, elem) {
+				deduped++
+				continue
+			}
+			filtered = append(filtered, elem)
+		}
+		if deduped > 0 {
+			t.notifyStateChange(ctx)
+		}
+		successElems = filtered
+		if len(successElems) == 0 {
+			return nil
+		}
 	}
 
 	items := make([]storagetypes.BatchItem, 0, len(successElems))
@@ -258,6 +295,7 @@ func (t *Task) saveBatchItems(ctx context.Context, successElems []*TaskElement, 
 		for index, elem := range successElems {
 			t.uploadCallback(ctx, elem.ID)(items[index].Size, items[index].Size)
 			t.markItemCompleted(elem.ID)
+			t.recordDedupAfterUpload(ctx, log.FromContext(ctx), elem, items[index].Size)
 		}
 		t.notifyStateChange(ctx)
 		return nil
@@ -279,6 +317,7 @@ func (t *Task) saveBatchItems(ctx context.Context, successElems []*TaskElement, 
 	for index, elem := range successElems {
 		t.uploadCallback(ctx, elem.ID)(items[index].Size, items[index].Size)
 		t.markItemCompleted(elem.ID)
+		t.recordDedupAfterUpload(ctx, log.FromContext(ctx), elem, items[index].Size)
 	}
 	t.notifyStateChange(ctx)
 	return nil
@@ -324,6 +363,135 @@ func (t *Task) refreshElemFile(ctx context.Context, logger *log.Logger, elem *Ta
 	return nil
 }
 
+// dedupSkipByFileID reports whether the element's Telegram file-id was
+// already saved to the same storage by the same user, marks the item
+// deduplicated and notifies progress when so. Fail-open: a database error
+// answers "not seen" (DedupHasFileID) so saving never blocks on the ledger.
+func (t *Task) dedupSkipByFileID(ctx context.Context, logger *log.Logger, elem *TaskElement) bool {
+	if t.UserID <= 0 {
+		return false // RT-5: user-less (API) tasks never share a dedup namespace
+	}
+	fid := elem.File.FileUniqueID()
+	if fid == "" || !database.DedupHasFileID(ctx, t.UserID, elem.Storage.Name(), fid) {
+		return false
+	}
+	t.markItemDeduped(elem.ID)
+	t.notifyStateChange(ctx)
+	logger.Infof("dedup skip (file-id %s): already saved to storage %s, path %s", fid, elem.Storage.Name(), elem.Path)
+	return true
+}
+
+// tryResend re-sends the element's Telegram source media straight to a
+// supporting storage (messages.sendMedia with a fresh input location) — no
+// download, no upload. Only the single-element path resends in v1; albums
+// keep the normal upload so media groups stay intact.
+//
+// handled reports that the element's fate was decided: completed on a
+// delivered resend, terminally failed on an ambiguous one. Fallback-eligible
+// failures return handled=false so the caller proceeds with the classic
+// download+upload path.
+func (t *Task) tryResend(ctx context.Context, logger *log.Logger, elem *TaskElement) (handled bool, err error) {
+	sender, ok := elem.Storage.(storagetypes.ExistingMediaSender)
+	if !ok {
+		return false, nil
+	}
+	msgFile, ok := elem.File.(tfile.TGFileMessage)
+	if !ok {
+		return false, nil
+	}
+	media, ok := tgutil.ResendInputMedia(msgFile)
+	if !ok {
+		return false, nil
+	}
+	sendCtx := tdler.SendCtxForFile(ctx, elem.File)
+	if sendCtx == nil {
+		return false, nil
+	}
+	// The upload path captions with the destination filename; the resend has
+	// no bytes to detect an extension from (RT-6), so the configured path's
+	// base is used as-is.
+	rerr := sender.SendExistingMedia(ctx, sendCtx, media, elem.Path, path.Base(elem.Path))
+	if rerr == nil {
+		logger.Info("resend ok (no download/upload)")
+		if derr := database.RecordDedup(ctx, t.UserID, elem.Storage.Name(), elem.File.FileUniqueID(), "", elem.File.Size(), elem.Path); derr != nil {
+			logger.Errorf("dedup record failed after resend (at-least-once duplicate risk): %v", derr)
+		}
+		t.markItemCompleted(elem.ID)
+		t.notifyStateChange(ctx)
+		return true, nil
+	}
+	if tgutil.ResendCanFallback(rerr) {
+		logger.Infof("resend failed (fallback to download+upload): %v", rerr)
+		return false, nil
+	}
+	// Ambiguous outcome: the message may have been delivered. Failing the
+	// element and retrying later is always safe; re-uploading is not.
+	logger.Errorf("resend failed (ambiguous, element failed): %v", rerr)
+	return true, fmt.Errorf("resend failed (ambiguous): %w", rerr)
+}
+
+// skipLargeElem reports whether the storage would drop the element for its
+// size (SkipLarge policy), marking the item skipped when so. Checking before
+// the download avoids spending bandwidth on a file the storage refuses.
+func (t *Task) skipLargeElem(ctx context.Context, logger *log.Logger, elem *TaskElement) bool {
+	size := elem.File.Size()
+	if size <= 0 {
+		return false // unknown size: let the storage decide at upload time
+	}
+	skipper, ok := elem.Storage.(storagetypes.StorageLargeFileSkipper)
+	if !ok {
+		return false
+	}
+	limit, ok := skipper.SkipLargeLimit(ctx)
+	if !ok || size <= limit {
+		return false
+	}
+	logger.Warnf("File skipped: %d bytes exceeds storage limit %d (SkipLarge)", size, limit)
+	t.markItemSkipped(elem.ID)
+	t.notifyStateChange(ctx)
+	return true
+}
+
+// recordDedupAfterUpload indexes a genuinely uploaded file in the dedup
+// ledger. A recording failure is only logged: the upload happened, so
+// at-least-once semantics say the next identical save may create a duplicate.
+func (t *Task) recordDedupAfterUpload(ctx context.Context, logger *log.Logger, elem *TaskElement, size int64) {
+	if t.UserID <= 0 {
+		return
+	}
+	fid := elem.File.FileUniqueID()
+	if fid == "" && elem.uploadHash == "" {
+		return
+	}
+	if err := database.DedupRecordSaved(ctx, t.UserID, elem.Storage.Name(), fid, elem.uploadHash, size, elem.Path); err != nil {
+		logger.Errorf("dedup record failed after upload (at-least-once duplicate risk): %v", err)
+	}
+}
+
+// dedupSkipByHash checks the downloaded cache file against the ledger and,
+// on a hit, marks the item deduplicated: the upload is dropped, the cache
+// file is cleaned up by the caller. Returns the content hash on a miss so the
+// caller can record it after a successful upload without re-hashing.
+func (t *Task) dedupSkipByHash(ctx context.Context, logger *log.Logger, elem *TaskElement) bool {
+	if t.UserID <= 0 {
+		return false
+	}
+	skip, hash, err := database.DedupCheckHash(ctx, t.UserID, elem.Storage.Name(), elem.localPath)
+	if err != nil {
+		// Fail-open: an unreadable file or ledger error never blocks the save.
+		logger.Warnf("dedup hash check failed (fail-open, continuing upload): %v", err)
+		return false
+	}
+	if !skip {
+		elem.uploadHash = hash
+		return false
+	}
+	logger.Infof("dedup skip (hash sha256:%s…): already saved to storage %s, path %s", hash[:min(12, len(hash))], elem.Storage.Name(), elem.Path)
+	t.markItemDeduped(elem.ID)
+	t.notifyStateChange(ctx)
+	return true
+}
+
 func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 	logger := log.FromContext(ctx).WithPrefix(fmt.Sprintf("file[%s]", elem.File.Name()))
 	if t.SkipIfExists && elem.Storage.Exists(ctx, elem.Path) {
@@ -332,6 +500,14 @@ func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 		t.notifyStateChange(ctx)
 		logger.Infof("File already exists, skipping: %s", elem.Path)
 		return errSkippedExists
+	}
+	// Dedup runs before the reference refresh: the file-id is captured at
+	// construction and refresh would cost one RPC per skipped element.
+	if t.dedupSkipByFileID(ctx, logger, elem) {
+		return errSkippedExists
+	}
+	if t.skipLargeElem(ctx, logger, elem) {
+		return storagetypes.ErrSkippedLarge
 	}
 	if err := t.refreshElemFile(ctx, logger, elem); err != nil {
 		t.markItemFailed(ctx, elem.ID, FailureStageDownload, err)
@@ -399,6 +575,17 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 		t.markItemCompleted(elem.ID)
 		t.notifyStateChange(ctx)
 		logger.Infof("File already exists, skipping: %s", elem.Path)
+		return nil
+	}
+	if t.dedupSkipByFileID(ctx, logger, &elem) {
+		return nil
+	}
+	// Album elements (downloadElement) keep the normal upload in v1: resending
+	// each item separately would break the source media group.
+	if handled, rerr := t.tryResend(ctx, logger, &elem); handled {
+		return rerr
+	}
+	if t.skipLargeElem(ctx, logger, &elem) {
 		return nil
 	}
 	if err := t.refreshElemFile(ctx, logger, &elem); err != nil {
@@ -525,6 +712,9 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 		t.notifyStateChange(ctx)
 		return fmt.Errorf("failed to get file stat: %w", err)
 	}
+	if t.dedupSkipByHash(ctx, logger, &elem) {
+		return nil
+	}
 	t.recordDownloadComplete(elem.ID, fileStat.Size())
 	vctx := context.WithValue(ctx, ctxkey.ContentLength, fileStat.Size())
 	t.startUpload(vctx)
@@ -561,7 +751,16 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 	if err == nil {
 		onProgress(fileStat.Size(), fileStat.Size())
 		t.markItemCompleted(elem.ID)
+		t.recordDedupAfterUpload(vctx, logger, &elem, fileStat.Size())
 		t.notifyStateChange(vctx)
+	} else if errors.Is(err, storagetypes.ErrSkippedLarge) {
+		// The pre-download filter missed (e.g. account limit drift) and the
+		// storage dropped the file by policy: nothing was uploaded, so no
+		// ledger or dedup record — count it as an intentional skip.
+		logger.Warnf("File skipped by storage (too large): %s", elem.Path)
+		t.markItemSkipped(elem.ID)
+		t.notifyStateChange(vctx)
+		err = nil
 	} else {
 		t.markItemFailed(vctx, elem.ID, lastFailureStage, err)
 		t.notifyStateChange(vctx)

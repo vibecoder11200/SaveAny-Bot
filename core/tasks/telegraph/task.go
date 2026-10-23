@@ -22,6 +22,8 @@ type Task struct {
 	StorPath string
 	client   *telegraph.Client
 	progress ProgressTracker
+	// UserID scopes the content dedup ledger; 0 (HTTP API) disables dedup.
+	UserID int64
 
 	cannotStream bool
 	totalpics    int

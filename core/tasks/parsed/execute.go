@@ -14,8 +14,10 @@ import (
 	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
 	"github.com/krau/SaveAny-Bot/common/utils/ioutil"
 	"github.com/krau/SaveAny-Bot/config"
+	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/enums/ctxkey"
 	"github.com/krau/SaveAny-Bot/pkg/parser"
+	"github.com/krau/SaveAny-Bot/pkg/storagetypes"
 	"github.com/krau/SaveAny-Bot/pkg/taskevent"
 	"golang.org/x/sync/errgroup"
 )
@@ -95,6 +97,8 @@ func (t *Task) processResource(ctx context.Context, resource parser.Resource) er
 			return resp.ContentLength
 		}())
 		if t.stream {
+			// Streamed bytes never touch this disk: no file to hash (RT-10).
+			logger.Debug("dedup: stream mode, content-hash check not possible")
 			return t.Stor.Save(ctx, resp.Body, path.Join(t.StorPath, resource.Filename))
 		}
 		cacheFile, err := fsutil.CreateFile(filepath.Join(config.C().Temp.BasePath,
@@ -137,7 +141,35 @@ func (t *Task) processResource(ctx context.Context, resource parser.Resource) er
 		if err != nil {
 			return fmt.Errorf("failed to seek cache file for resource %s: %w", resource.URL, err)
 		}
-		return t.Stor.Save(ctx, cacheFile, path.Join(t.StorPath, resource.Filename))
+		var contentHash string
+		if t.UserID > 0 {
+			skip, hash, derr := database.DedupCheckHash(ctx, t.UserID, t.Stor.Name(), cacheFile.Name())
+			switch {
+			case derr != nil:
+				logger.Warnf("dedup hash check failed (fail-open, continuing upload): %v", derr)
+			case skip:
+				logger.Infof("dedup skip (hash sha256:%s…): already saved to storage %s, path %s", hash[:min(12, len(hash))], t.Stor.Name(), resource.Filename)
+				return nil
+			default:
+				contentHash = hash
+			}
+		}
+		skippedLarge := false
+		saveErr := t.Stor.Save(ctx, cacheFile, path.Join(t.StorPath, resource.Filename))
+		if errors.Is(saveErr, storagetypes.ErrSkippedLarge) {
+			logger.Warnf("File skipped by storage (too large): %s", resource.Filename)
+			skippedLarge = true
+			saveErr = nil
+		}
+		if saveErr != nil {
+			return fmt.Errorf("failed to save resource %s: %w", resource.URL, saveErr)
+		}
+		if !skippedLarge && t.UserID > 0 && contentHash != "" {
+			if derr := database.DedupRecordSaved(ctx, t.UserID, t.Stor.Name(), "", contentHash, 0, path.Join(t.StorPath, resource.Filename)); derr != nil {
+				logger.Errorf("dedup record failed after upload (at-least-once duplicate risk): %v", derr)
+			}
+		}
+		return nil
 	}, retry.Context(ctx), retry.RetryTimes(uint(config.C().Retry)))
 	if ctx.Err() != nil {
 		return ctx.Err()

@@ -36,6 +36,7 @@ type Task struct {
 	Storage  storage.Storage
 	StorPath string
 	Progress ProgressTracker
+	UserID   int64 // requesting user's chat ID; 0 when created without one (HTTP API)
 
 	client          *http.Client
 	stream          bool

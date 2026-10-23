@@ -32,6 +32,10 @@ type Task struct {
 	SkipIfExists bool
 	stream       bool
 	localPath    string
+	// uploadHash is the sha256 of the downloaded cache file, captured during
+	// the pre-upload dedup check and recorded in the ledger once the upload
+	// actually succeeds.
+	uploadHash string
 }
 
 // JournalPayload implements core's journal source contract: the task is

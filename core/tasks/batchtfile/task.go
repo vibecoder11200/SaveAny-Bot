@@ -31,6 +31,10 @@ type TaskElement struct {
 	sourceGroupKey  string
 	sourceCaption   string
 	preserveCaption bool
+	// uploadHash is the sha256 of the downloaded cache file, captured during
+	// the pre-upload dedup check and recorded in the ledger once the upload
+	// actually succeeds.
+	uploadHash string
 }
 
 type Task struct {
