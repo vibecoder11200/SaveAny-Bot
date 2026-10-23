@@ -15,8 +15,8 @@ import (
 	"github.com/krau/SaveAny-Bot/common/tdler"
 	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
 	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
-	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/common/utils/ioutil"
+	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/config"
 	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/enums/ctxkey"
@@ -368,8 +368,10 @@ func (t *Task) refreshElemFile(ctx context.Context, logger *log.Logger, elem *Ta
 // deduplicated and notifies progress when so. Fail-open: a database error
 // answers "not seen" (DedupHasFileID) so saving never blocks on the ledger.
 func (t *Task) dedupSkipByFileID(ctx context.Context, logger *log.Logger, elem *TaskElement) bool {
-	if t.UserID <= 0 {
-		return false // RT-5: user-less (API) tasks never share a dedup namespace
+	if t.UserID <= 0 || t.DisableDedup {
+		// RT-5: user-less (API) tasks never share a dedup namespace; an
+		// explicit overwrite is a deliberate re-save of known content.
+		return false
 	}
 	fid := elem.File.FileUniqueID()
 	if fid == "" || !database.DedupHasFileID(ctx, t.UserID, elem.Storage.Name(), fid) {
@@ -427,6 +429,8 @@ func (t *Task) tryResend(ctx context.Context, logger *log.Logger, elem *TaskElem
 	// Ambiguous outcome: the message may have been delivered. Failing the
 	// element and retrying later is always safe; re-uploading is not.
 	logger.Errorf("resend failed (ambiguous, element failed): %v", rerr)
+	t.markItemFailed(ctx, elem.ID, FailureStageUpload, rerr)
+	t.notifyStateChange(ctx)
 	return true, fmt.Errorf("resend failed (ambiguous): %w", rerr)
 }
 
@@ -474,6 +478,14 @@ func (t *Task) recordDedupAfterUpload(ctx context.Context, logger *log.Logger, e
 // caller can record it after a successful upload without re-hashing.
 func (t *Task) dedupSkipByHash(ctx context.Context, logger *log.Logger, elem *TaskElement) bool {
 	if t.UserID <= 0 {
+		return false
+	}
+	if t.DisableDedup {
+		// Overwrite still wants the hash recorded after a genuine upload, so
+		// hash the file but never skip on it.
+		if _, hash, err := database.DedupCheckHash(ctx, t.UserID, elem.Storage.Name(), elem.localPath); err == nil {
+			elem.uploadHash = hash
+		}
 		return false
 	}
 	skip, hash, err := database.DedupCheckHash(ctx, t.UserID, elem.Storage.Name(), elem.localPath)
@@ -722,6 +734,7 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 	attempt := 0
 	retryLimit := int(config.C().Retry)
 	lastFailureStage := FailureStageUpload
+	skippedLarge := false
 	err = retry.Retry(func() error {
 		attempt++
 		var file *os.File
@@ -734,34 +747,41 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 		}
 		defer file.Close()
 		onProgress(0, fileStat.Size())
+		var saveErr error
 		if progressSaver, ok := elem.Storage.(storage.StorageProgressSaver); ok {
-			err = progressSaver.SaveWithProgress(vctx, file, elem.Path, onProgress)
+			saveErr = progressSaver.SaveWithProgress(vctx, file, elem.Path, onProgress)
 		} else {
-			err = elem.Storage.Save(vctx, ioutil.NewProgressReader(file, fileStat.Size(), onProgress), elem.Path)
+			saveErr = elem.Storage.Save(vctx, ioutil.NewProgressReader(file, fileStat.Size(), onProgress), elem.Path)
 		}
-		if err != nil {
-			logger.Errorf("Failed to save file: %s, retrying...", err)
+		if errors.Is(saveErr, storagetypes.ErrSkippedLarge) {
+			// Policy skip, not a failure: stop retrying immediately; nothing
+			// was uploaded, so no ledger or dedup record may follow.
+			skippedLarge = true
+			return nil
+		}
+		if saveErr != nil {
+			logger.Errorf("Failed to save file: %s, retrying...", saveErr)
 			lastFailureStage = t.itemFailureStage(elem.ID)
-			t.markItemRetry(elem.ID, lastFailureStage, attempt, retryLimit, err)
+			t.markItemRetry(elem.ID, lastFailureStage, attempt, retryLimit, saveErr)
 			t.notifyStateChange(vctx)
-			return err
+			return saveErr
 		}
 		return nil
 	}, retry.Context(vctx), retry.RetryTimes(uint(config.C().Retry)))
-	if err == nil {
+	switch {
+	case err == nil && skippedLarge:
+		// The pre-download filter missed (e.g. account limit drift) and the
+		// storage dropped the file by policy: count it as an intentional skip.
+		logger.Warnf("File skipped by storage (too large): %s", elem.Path)
+		t.markItemSkipped(elem.ID)
+		t.notifyStateChange(vctx)
+		return nil
+	case err == nil:
 		onProgress(fileStat.Size(), fileStat.Size())
 		t.markItemCompleted(elem.ID)
 		t.recordDedupAfterUpload(vctx, logger, &elem, fileStat.Size())
 		t.notifyStateChange(vctx)
-	} else if errors.Is(err, storagetypes.ErrSkippedLarge) {
-		// The pre-download filter missed (e.g. account limit drift) and the
-		// storage dropped the file by policy: nothing was uploaded, so no
-		// ledger or dedup record — count it as an intentional skip.
-		logger.Warnf("File skipped by storage (too large): %s", elem.Path)
-		t.markItemSkipped(elem.ID)
-		t.notifyStateChange(vctx)
-		err = nil
-	} else {
+	default:
 		t.markItemFailed(vctx, elem.ID, lastFailureStage, err)
 		t.notifyStateChange(vctx)
 	}

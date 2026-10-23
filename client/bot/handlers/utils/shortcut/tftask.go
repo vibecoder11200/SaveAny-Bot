@@ -100,6 +100,9 @@ startCreateTask:
 		return dispatcher.EndGroups
 	}
 	task.UserID = userID
+	// Overwrite is a deliberate re-save of known content: dedup must not
+	// silently drop the file the user explicitly asked to save again.
+	task.DisableDedup = strategy == tcbdata.ConflictStrategyOverwrite
 	if err := core.AddTask(injectCtx, task); err != nil {
 		logger.Errorf("add task failed: %s", err)
 		ctx.EditMessage(userID, &tg.MessagesEditMessageRequest{
@@ -193,11 +196,14 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor st
 				}
 			}
 			// Name conflict keeps priority; file-id dedup only fires for
-			// content this user has not already saved to this storage.
-			if fid := file.FileUniqueID(); fid != "" && database.DedupHasFileID(ctx, user.ChatID, fileStor.Name(), fid) {
-				log.Infof("dedup skip (file-id %s): already saved to storage %s, path %s", fid, fileStor.Name(), storPath)
-				deduped = append(deduped, file.Name())
-				continue
+			// content this user has not already saved to this storage. An
+			// explicit overwrite is a deliberate re-save — never deduped.
+			if strategy != tcbdata.ConflictStrategyOverwrite {
+				if fid := file.FileUniqueID(); fid != "" && database.DedupHasFileID(ctx, user.ChatID, fileStor.Name(), fid) {
+					logger.Infof("dedup skip (file-id %s): already saved to storage %s, path %s", fid, fileStor.Name(), storPath)
+					deduped = append(deduped, file.Name())
+					continue
+				}
 			}
 			elem, err := batchtfile.NewTaskElement(fileStor, storPath, file)
 			if err != nil {
@@ -252,10 +258,12 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor st
 					continue
 				}
 			}
-			if fid := af.file.FileUniqueID(); fid != "" && database.DedupHasFileID(ctx, user.ChatID, albumStor.Name(), fid) {
-				log.Infof("dedup skip (file-id %s): already saved to storage %s, path %s", fid, albumStor.Name(), afstorPath)
-				deduped = append(deduped, af.file.Name())
-				continue
+			if strategy != tcbdata.ConflictStrategyOverwrite {
+				if fid := af.file.FileUniqueID(); fid != "" && database.DedupHasFileID(ctx, user.ChatID, albumStor.Name(), fid) {
+					logger.Infof("dedup skip (file-id %s): already saved to storage %s, path %s", fid, albumStor.Name(), afstorPath)
+					deduped = append(deduped, af.file.Name())
+					continue
+				}
 			}
 			elem, err := batchtfile.NewTaskElement(albumStor, afstorPath, af.file)
 			if err != nil {
@@ -291,6 +299,9 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID int64, stor st
 	taskid := xid.New().String()
 	task := batchtfile.NewBatchTGFileTask(taskid, injectCtx, elems, batchtfile.NewProgressTrackerWithSkipped(trackMsgID, userID, skipped, deduped), true)
 	task.UserID = userID
+	// Overwrite is a deliberate re-save of known content: dedup must not
+	// silently drop files the user explicitly asked to save again.
+	task.DisableDedup = strategy == tcbdata.ConflictStrategyOverwrite
 	if err := core.AddTask(injectCtx, task); err != nil {
 		logger.Errorf("Failed to add batch task: %s", err)
 		ctx.EditMessage(userID, &tg.MessagesEditMessageRequest{
@@ -362,12 +373,16 @@ func buildBatchAddedMessage(count int, skipped, deduped []string) string {
 }
 
 func buildAllDedupedMessage(deduped, skipped []string) string {
+	parts := make([]string, 0, 2)
 	if len(deduped) > 0 {
-		return i18n.T(i18nk.BotMsgCommonInfoAllDedupFilesSkipped, map[string]any{
+		parts = append(parts, i18n.T(i18nk.BotMsgCommonInfoAllDedupFilesSkipped, map[string]any{
 			"Deduped": strings.Join(deduped, "\n"),
-		})
+		}))
 	}
-	return i18n.T(i18nk.BotMsgCommonInfoAllConflictFilesSkipped, map[string]any{
-		"Skipped": strings.Join(skipped, "\n"),
-	})
+	if len(skipped) > 0 {
+		parts = append(parts, i18n.T(i18nk.BotMsgCommonInfoAllConflictFilesSkipped, map[string]any{
+			"Skipped": strings.Join(skipped, "\n"),
+		}))
+	}
+	return strings.Join(parts, "\n\n")
 }

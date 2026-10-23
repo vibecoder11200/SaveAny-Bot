@@ -47,7 +47,11 @@ type Task struct {
 	// SkipIfExists makes Execute skip elements whose destination file
 	// already exists, regardless of the user's conflict strategy. Recovery
 	// sets it: an existing file is this same task's earlier progress.
-	SkipIfExists    bool
+	SkipIfExists bool
+	// DisableDedup turns the content-dedup checks off while still recording
+	// saves: set when the user explicitly chose the overwrite conflict
+	// strategy — an overwrite is a deliberate re-save of known content.
+	DisableDedup    bool
 	downloaded      atomic.Int64
 	totalSize       int64
 	uploadTotalSize atomic.Int64

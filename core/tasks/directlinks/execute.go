@@ -131,7 +131,15 @@ func (t *Task) processLink(ctx context.Context, file *File) error {
 		if t.stream {
 			// Streamed bytes never touch this disk: no file to hash (RT-10).
 			logger.Debug("dedup: stream mode, content-hash check not possible")
-			return t.Storage.Save(ctx, resp.Body, filepath.Join(t.StorPath, file.Name))
+			saveErr := t.Storage.Save(ctx, resp.Body, filepath.Join(t.StorPath, file.Name))
+			if errors.Is(saveErr, storagetypes.ErrSkippedLarge) {
+				logger.Warnf("File skipped by storage (too large): %s", file.Name)
+				return nil
+			}
+			if saveErr != nil {
+				return fmt.Errorf("failed to save file %s: %w", file.URL, saveErr)
+			}
+			return nil
 		}
 		cacheFile, err := fsutil.CreateFile(filepath.Join(config.C().Temp.BasePath,
 			fmt.Sprintf("direct_%s_%s", t.ID, file.Name)))

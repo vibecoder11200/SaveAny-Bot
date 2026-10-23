@@ -2,14 +2,18 @@ package batchtfile
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/celestix/gotgproto/ext"
 	"github.com/charmbracelet/log"
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/tg"
 	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
+	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/config"
 	"github.com/krau/SaveAny-Bot/database"
 	storenum "github.com/krau/SaveAny-Bot/pkg/enums/storage"
@@ -219,7 +223,7 @@ func TestUploadBatchResultsAllSkipped(t *testing.T) {
 			ID:        string(rune('a' + i)),
 			Storage:   stor,
 			Path:      filepath.Join("dir", string(rune('a'+i))+".bin"),
-			File:      &fakeFile{name: string(rune('a' + i)) + ".bin"},
+			File:      &fakeFile{name: string(rune('a'+i)) + ".bin"},
 			localPath: filepath.Join(t.TempDir(), "missing.bin"),
 		}
 	}
@@ -375,3 +379,131 @@ type sizeFile struct {
 }
 
 func (f *sizeFile) Size() int64 { return f.size }
+
+// fakeResendStorage is a batch storage whose resend outcome is scripted.
+type fakeResendStorage struct {
+	*fakeBatchStorage
+	sendErr error
+	sent    int
+}
+
+func (f *fakeResendStorage) SendExistingMedia(ctx context.Context, sendCtx *ext.Context, media tg.InputMediaClass, storagePath, caption string) error {
+	f.sent++
+	return f.sendErr
+}
+
+// fakeMsgFile carries a document location plus its source message, the shape
+// tryResend needs.
+type fakeMsgFile struct {
+	fakeFile
+	location *tg.InputDocumentFileLocation
+	message  *tg.Message
+}
+
+func (f *fakeMsgFile) Location() tg.InputFileLocationClass { return f.location }
+func (f *fakeMsgFile) Message() *tg.Message                { return f.message }
+func (f *fakeMsgFile) RefreshLocation(tg.MessageMediaClass) error {
+	return nil
+}
+
+var _ tfile.TGFileMessage = (*fakeMsgFile)(nil)
+
+func resendTestElem(stor storage.Storage) *TaskElement {
+	return &TaskElement{
+		ID:      "r1",
+		Storage: stor,
+		Path:    "dir/r.mp4",
+		File: &fakeMsgFile{
+			fakeFile: fakeFile{name: "r.mp4", fid: "doc:9"},
+			location: &tg.InputDocumentFileLocation{ID: 9, AccessHash: 99, FileReference: []byte("ref")},
+			message:  &tg.Message{ID: 7},
+		},
+	}
+}
+
+func TestTryResendOutcomes(t *testing.T) {
+	setupDedupTestDB(t)
+	logger := log.FromContext(context.Background())
+
+	// Success: item completed, ledger gains the file-id row.
+	stor := &fakeResendStorage{fakeBatchStorage: &fakeBatchStorage{}}
+	elem := resendTestElem(stor)
+	task := NewBatchTGFileTask("r-ok", context.Background(), []TaskElement{*elem}, &recordingTracker{}, true)
+	task.UserID = 1
+	ctx := tgutil.ExtWithContext(context.Background(), new(ext.Context))
+
+	handled, err := task.tryResend(ctx, logger, elem)
+	if !handled || err != nil {
+		t.Fatalf("success resend: handled=%v err=%v", handled, err)
+	}
+	if stor.sent != 1 {
+		t.Fatalf("sent = %d, want 1", stor.sent)
+	}
+	if phase := itemPhaseByID(t, task, "r1"); phase != ItemPhaseCompleted {
+		t.Fatalf("phase = %v, want completed", phase)
+	}
+	if !database.DedupHasFileID(ctx, 1, stor.Name(), "doc:9") {
+		t.Fatal("resend success must record the file-id in the dedup ledger")
+	}
+
+	// Fallback-eligible failure: falls through to the download+upload path,
+	// item untouched.
+	storFB := &fakeResendStorage{fakeBatchStorage: &fakeBatchStorage{}, sendErr: fmt.Errorf("%w: no peer", storagetypes.ErrResendPreflight)}
+	elemFB := resendTestElem(storFB)
+	taskFB := NewBatchTGFileTask("r-fb", context.Background(), []TaskElement{*elemFB}, &recordingTracker{}, true)
+	taskFB.UserID = 1
+	handled, err = taskFB.tryResend(ctx, logger, elemFB)
+	if handled || err != nil {
+		t.Fatalf("fallback resend: handled=%v err=%v", handled, err)
+	}
+	if phase := itemPhaseByID(t, taskFB, "r1"); phase != ItemPhaseWaiting {
+		t.Fatalf("phase = %v, want waiting (fallback leaves the item alone)", phase)
+	}
+
+	// Ambiguous failure: element terminally failed and accounted for.
+	storAmb := &fakeResendStorage{fakeBatchStorage: &fakeBatchStorage{}, sendErr: errors.New("connection reset mid-send")}
+	elemAmb := resendTestElem(storAmb)
+	taskAmb := NewBatchTGFileTask("r-amb", context.Background(), []TaskElement{*elemAmb}, &recordingTracker{}, true)
+	taskAmb.UserID = 1
+	handled, err = taskAmb.tryResend(ctx, logger, elemAmb)
+	if !handled || err == nil {
+		t.Fatalf("ambiguous resend: handled=%v err=%v", handled, err)
+	}
+	if phase := itemPhaseByID(t, taskAmb, "r1"); phase != ItemPhaseFailed {
+		t.Fatalf("phase = %v, want failed (ambiguous resend must be accounted)", phase)
+	}
+	if database.DedupHasFileID(ctx, 1, storAmb.Name(), "doc:9") {
+		t.Fatal("failed resend must not record into the ledger")
+	}
+}
+
+// Overwrite tasks bypass the file-id dedup even on a ledger hit.
+func TestDisableDedupBypassesFileID(t *testing.T) {
+	setupDedupTestDB(t)
+	ctx := context.Background()
+	logger := log.FromContext(ctx)
+
+	stor := &fakeBatchStorage{}
+	elem := &TaskElement{
+		ID:      "ow1",
+		Storage: stor,
+		Path:    "dir/ow.bin",
+		File:    &fakeFile{name: "ow.bin", fid: "doc:55"},
+	}
+	if err := database.RecordDedup(ctx, 1, stor.Name(), "doc:55", "", 1, "old/path.bin"); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	task := NewBatchTGFileTask("ow-on", ctx, []TaskElement{*elem}, &recordingTracker{}, true)
+	task.UserID = 1
+	task.DisableDedup = true
+	if task.dedupSkipByFileID(ctx, logger, elem) {
+		t.Fatal("overwrite task must not be deduped by file-id")
+	}
+
+	task2 := NewBatchTGFileTask("ow-off", ctx, []TaskElement{*elem}, &recordingTracker{}, true)
+	task2.UserID = 1
+	if !task2.dedupSkipByFileID(ctx, logger, elem) {
+		t.Fatal("non-overwrite task must still dedup by file-id")
+	}
+}

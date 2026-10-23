@@ -258,7 +258,8 @@ func (t *Task) markItemRetry(id string, stage FailureStage, attempt, limit int, 
 
 func (t *Task) markItemFailed(ctx context.Context, id string, stage FailureStage, err error) {
 	t.updateItem(id, func(item *itemProgressState) {
-		if item.phase == ItemPhaseFailed || item.phase == ItemPhaseCompleted || item.phase == ItemPhaseDeduped {
+		if item.phase == ItemPhaseFailed || item.phase == ItemPhaseCompleted ||
+			item.phase == ItemPhaseDeduped || item.phase == ItemPhaseSkipped {
 			return
 		}
 		if errors.Is(ctx.Err(), context.Canceled) {

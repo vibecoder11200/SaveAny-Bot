@@ -121,6 +121,12 @@ func (t *Telegram) SendExistingMedia(ctx context.Context, sendCtx *ext.Context, 
 	if sendCtx == nil {
 		return fmt.Errorf("%w: no client context to send from", storagetypes.ErrResendPreflight)
 	}
+	// RT-14a pins the destination to the configured chat; a storage path
+	// that redirects to another chat cannot be represented by a resend, so
+	// fall back to the upload path, which honors the redirect.
+	if _, chatID := t.target(sendCtx, storagePath); chatID != t.config.ChatID {
+		return fmt.Errorf("%w: storage path targets chat %d, resend only supports the configured chat %d", storagetypes.ErrResendPreflight, chatID, t.config.ChatID)
+	}
 	peer := tryGetInputPeer(sendCtx, t.config.ChatID)
 	if peer == nil || peer.Zero() {
 		return fmt.Errorf("%w: no input peer for chat %d on the sending account", storagetypes.ErrResendPreflight, t.config.ChatID)

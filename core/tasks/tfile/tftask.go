@@ -30,6 +30,10 @@ type Task struct {
 	// existing file is this same task's earlier progress, and at boot there
 	// is nobody to ask "overwrite?".
 	SkipIfExists bool
+	// DisableDedup turns the content-dedup checks off while still recording
+	// saves: set when the user explicitly chose the overwrite conflict
+	// strategy — an overwrite is a deliberate re-save of known content.
+	DisableDedup bool
 	stream       bool
 	localPath    string
 	// uploadHash is the sha256 of the downloaded cache file, captured during

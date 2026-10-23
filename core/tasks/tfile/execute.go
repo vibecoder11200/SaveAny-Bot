@@ -12,9 +12,9 @@ import (
 	"github.com/duke-git/lancet/v2/retry"
 	"github.com/krau/SaveAny-Bot/common/tdler"
 	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
-	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
 	"github.com/krau/SaveAny-Bot/common/utils/ioutil"
+	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/config"
 	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/enums/ctxkey"
@@ -40,7 +40,7 @@ func (t *Task) Execute(ctx context.Context) error {
 			return nil
 		}
 	}
-	if t.UserID > 0 {
+	if t.UserID > 0 && !t.DisableDedup {
 		if fid := t.File.FileUniqueID(); fid != "" && database.DedupHasFileID(ctx, t.UserID, t.Storage.Name(), fid) {
 			logger.Infof("dedup skip (file-id %s): already saved to storage %s, path %s", fid, t.Storage.Name(), t.Path)
 			if t.Progress != nil {
@@ -119,16 +119,13 @@ func (t *Task) Execute(ctx context.Context) error {
 	}
 	// Content-hash dedup: identical bytes under a different name are dropped
 	// here, after the download but before the upload.
-	if t.UserID > 0 {
+	if t.UserID > 0 && !t.DisableDedup {
 		skip, hash, herr := database.DedupCheckHash(ctx, t.UserID, t.Storage.Name(), t.localPath)
 		if herr != nil {
 			logger.Warnf("dedup hash check failed (fail-open, continuing upload): %v", herr)
 		} else if skip {
 			logger.Infof("dedup skip (hash sha256:%s…): already saved to storage %s, path %s", hash[:min(12, len(hash))], t.Storage.Name(), t.Path)
-			if t.Progress != nil {
-				t.Progress.OnDone(ctx, t, nil)
-			}
-			return nil
+			return nil // the deferred OnDone reports success
 		} else {
 			t.uploadHash = hash
 		}
@@ -137,6 +134,7 @@ func (t *Task) Execute(ctx context.Context) error {
 	if caption, ok := sourceCaption(t.File); ok {
 		vctx = storagetypes.WithSourceCaption(vctx, caption)
 	}
+	skippedLarge := false
 	err = retry.Retry(func() error {
 		file, err := os.Open(t.localPath)
 		if err != nil {
@@ -144,36 +142,40 @@ func (t *Task) Execute(ctx context.Context) error {
 		}
 		defer file.Close()
 		uploadProgress, tracksUpload := t.Progress.(UploadProgressTracker)
+		var saveErr error
 		if !tracksUpload {
-			if err = t.Storage.Save(vctx, file, t.Path); err != nil {
-				return fmt.Errorf("failed to save file: %w", err)
+			saveErr = t.Storage.Save(vctx, file, t.Path)
+		} else {
+			uploadProgress.OnUploadStart(vctx, t, fileStat.Size())
+			onProgress := func(uploaded, total int64) {
+				uploadProgress.OnUploadProgress(vctx, t, uploaded, total)
 			}
+			if progressSaver, ok := t.Storage.(storage.StorageProgressSaver); ok {
+				saveErr = progressSaver.SaveWithProgress(vctx, file, t.Path, onProgress)
+			} else {
+				var reader io.Reader = ioutil.NewProgressReader(file, fileStat.Size(), onProgress)
+				saveErr = t.Storage.Save(vctx, reader, t.Path)
+			}
+		}
+		if errors.Is(saveErr, storagetypes.ErrSkippedLarge) {
+			// Policy skip, not a failure: stop retrying immediately and let
+			// the caller know nothing was uploaded.
+			skippedLarge = true
 			return nil
 		}
-
-		uploadProgress.OnUploadStart(vctx, t, fileStat.Size())
-		onProgress := func(uploaded, total int64) {
-			uploadProgress.OnUploadProgress(vctx, t, uploaded, total)
-		}
-		if progressSaver, ok := t.Storage.(storage.StorageProgressSaver); ok {
-			err = progressSaver.SaveWithProgress(vctx, file, t.Path, onProgress)
-		} else {
-			var reader io.Reader = ioutil.NewProgressReader(file, fileStat.Size(), onProgress)
-			err = t.Storage.Save(vctx, reader, t.Path)
-		}
-		if err != nil {
-			return fmt.Errorf("failed to save file: %w", err)
+		if saveErr != nil {
+			return fmt.Errorf("failed to save file: %w", saveErr)
 		}
 		return nil
 	}, retry.RetryTimes(uint(config.C().Retry)), retry.Context(vctx))
-	if errors.Is(err, storagetypes.ErrSkippedLarge) {
-		// The storage dropped the file by policy: nothing was uploaded, so
-		// no ledger or dedup record — report success-with-skip.
-		logger.Warnf("File skipped by storage (too large): %s", t.Path)
-		err = nil
-	}
 	if err != nil {
 		return fmt.Errorf("failed to save file after retries: %w", err)
+	}
+	if skippedLarge {
+		// Nothing was uploaded: no ledger or dedup record — report
+		// success-with-skip through the deferred OnDone.
+		logger.Warnf("File skipped by storage (too large): %s", t.Path)
+		return nil
 	}
 	if t.UserID > 0 && (t.File.FileUniqueID() != "" || t.uploadHash != "") {
 		if derr := database.DedupRecordSaved(ctx, t.UserID, t.Storage.Name(), t.File.FileUniqueID(), t.uploadHash, fileStat.Size(), t.Path); derr != nil {
