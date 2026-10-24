@@ -94,17 +94,22 @@ bot:
       使用 /watch 命令监听一个聊天的消息, 并自动保存到默认存储中, 遵从存储规则.
 
       命令语法:
-      /watch <chat_id> [msgre:<正则>] [mediatype:<类型>]
+      /watch <chat_id> [storage:<存储名>] [dir:<路径>] [msgre:<正则>] [mediatype:<类型>]
 
       参数:
       - <chat_id>: 聊天的 ID 或用户名
-      - [msgre:<正则>]: 可选, 仅保存说明文字匹配该正则的消息
+      - [storage:<存储名>]: 可选, 保存到指定的存储而不是默认存储
+      - [dir:<路径>]: 可选, 保存到存储中的该目录 (相对路径)
+      - [msgre:<正则>]: 可选, 仅保存说明文字或文件名匹配该正则的消息 (与 /save 一致)
       - [mediatype:<类型>]: 可选, 逗号分隔的媒体类型, 如 mediatype:photo,audio; 省略时应用通过 /config 设置的默认媒体过滤器
 
-      命令示例:
-      /watch -1002229835658 msgre:.*plana.* mediatype:video
+      设置了 storage:/dir: 时, 该监听将跳过存储规则.
+      媒体组 (相册) 总是作为一个整体保存: Telegram 存储发送为一条相册消息, 其他存储保存到以第一个文件命名的子文件夹中.
 
-      这将监听 ID 为 -1002229835658 的聊天, 并转存所有包含 "plana" 的视频消息
+      命令示例:
+      /watch -1002229835658 storage:local1 dir:videos msgre:.*plana.* mediatype:video
+
+      这将监听 ID 为 -1002229835658 的聊天, 并把包含 "plana" 的视频消息保存到 local1 的 videos/ 目录下
 
       监听任务的通知默认关闭, 可使用 /watch notify on|off 开启或关闭.
     common:
@@ -167,11 +172,14 @@ bot:
     watch:
       error_filter_format_invalid: "过滤器格式错误, 请使用 <过滤器类型>:<表达式>"
       error_filter_type_unsupported: "不支持的过滤器类型, 请参阅文档"
+      error_dir_path_invalid: "无效的目录路径: {{.Error}}"
       error_watch_chat_failed: "监听聊天失败: {{.Error}}"
       info_watch_chat_started: "已开始监听聊天: {{.Chat}}"
       info_already_watching_chat: "已经在监听此聊天"
       info_watch_list_empty: "当前没有监听任何聊天"
       info_watch_list_header: "当前监听的聊天:\n"
+      info_watch_list_storage_prefix: " (存储: "
+      info_watch_list_dir_prefix: " (目录: "
       info_watch_list_filter_prefix: " (过滤器: "
       info_watch_list_mediatype_prefix: " (媒体类型: "
       error_unwatch_no_chat_provided: "请提供要取消监听的聊天ID或用户名"
@@ -181,6 +189,14 @@ bot:
       info_notify_enabled: "已为你监听的所有聊天开启任务通知: 监听到的消息及其保存结果会在此处反馈.\n\n用法: /watch notify on|off"
       info_notify_disabled: "已为你监听的所有聊天关闭任务通知.\n\n用法: /watch notify on|off"
       notify_detected: "<b>🔔 监听到新消息</b>\n<code>{{.Name}}</code>\n进度将在此处更新"
+      notify_album_detected: "<b>🔔 监听到相册</b>\n共 <code>{{.Count}} 个文件</code>, 以 <code>{{.Name}}</code> 开头\n进度将在此处更新"
+      catchup_summary: |-
+        🔔 聊天 <code>{{.Chat}}</code> 的监听补拉已完成
+
+        拉取新消息: <code>{{.Fetched}}</code> 条
+        任务已加入队列: <code>{{.Enqueued}}</code> (相册: <code>{{.Albums}}</code>)
+        {{if .SkippedByCap}}更早的消息已跳过 (达到上限 {{.Cap}}): <code>{{.SkippedByCap}}</code> 条 — 如有需要请手动 /save.
+        {{end}}文件已入队, 尚未保存完成: 请留意任务结果通知.
     recovery:
       info_task_recovered: "♻️ 正在恢复上次重启时未完成的任务..."
       info_summary: |-

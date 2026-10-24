@@ -41,6 +41,14 @@ type WatchChat struct {
 	ChatID    int64
 	Filter    string
 	MediaType string // comma-separated media types to accept; empty = no media type filtering
+	// Per-watch destination override (fork): when either is set, the rule
+	// layer is skipped for this watch and saves go to this storage/dir.
+	StorageName string
+	DirPath     string
+	// LastMessageID is the catch-up cursor: the newest message ID already
+	// observed (live) or durably enqueued (backfill) for this watch.
+	// NULL/0 = never initialized.
+	LastMessageID *int64
 }
 
 type Dir struct {

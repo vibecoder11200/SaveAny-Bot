@@ -169,7 +169,6 @@ func handleBatchSave(ctx *ext.Context, update *ext.Update, args []string) error 
 		return dispatcher.EndGroups
 	}
 	files := make([]tfile.TGFileMessage, 0, len(msgs))
-	sb := strings.Builder{}
 	for _, msg := range msgs {
 		if msg == nil {
 			continue
@@ -186,12 +185,8 @@ func handleBatchSave(ctx *ext.Context, update *ext.Update, args []string) error 
 			continue
 		}
 		if filter != nil {
-			sb.Reset()
-			sb.WriteString(msg.GetMessage())
-			sb.WriteString(" ")
-			fn, _ := tgutil.GetMediaFileName(media)
-			sb.WriteString(fn)
-			if !filter.MatchString(sb.String()) {
+			// Parity: watch filters match the exact same string.
+			if !filter.MatchString(mediautil.MatchStringForFilter(msg)) {
 				continue
 			}
 		}

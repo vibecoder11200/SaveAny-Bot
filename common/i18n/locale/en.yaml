@@ -94,17 +94,22 @@ bot:
       Use /watch to watch messages in a chat and automatically save them to the default storage, following storage rules.
 
       Syntax:
-      /watch <chat_id> [msgre:<regex>] [mediatype:<types>]
+      /watch <chat_id> [storage:<name>] [dir:<path>] [msgre:<regex>] [mediatype:<types>]
 
       Parameters:
       - <chat_id>: Chat ID or username
-      - [msgre:<regex>]: Optional, only save messages whose caption matches the regex
+      - [storage:<name>]: Optional, save to the named storage instead of your default
+      - [dir:<path>]: Optional, save under this directory of the storage (relative path)
+      - [msgre:<regex>]: Optional, only save messages whose caption or filename matches the regex (same matching as /save)
       - [mediatype:<types>]: Optional, comma-separated media types to accept, e.g. mediatype:photo,audio; when omitted your default media filter (set via /config) applies
 
-      Example:
-      /watch -1002229835658 msgre:.*plana.* mediatype:video
+      When storage:/dir: are set, storage rules are skipped for this watch.
+      Media groups (albums) are always saved as one album: on Telegram storage as a single album message, on other storages under a subfolder named after the first file.
 
-      This will watch chat with ID -1002229835658 and save video messages containing "plana".
+      Example:
+      /watch -1002229835658 storage:local1 dir:videos msgre:.*plana.* mediatype:video
+
+      This will watch chat with ID -1002229835658 and save video messages containing "plana" to local1 under videos/.
 
       Notifications for saved messages are off by default, toggle them with /watch notify on|off.
     common:
@@ -167,11 +172,14 @@ bot:
     watch:
       error_filter_format_invalid: "Invalid filter format, please use <type>:<expression>"
       error_filter_type_unsupported: "Unsupported filter type, please see the docs"
+      error_dir_path_invalid: "Invalid dir path: {{.Error}}"
       error_watch_chat_failed: "Failed to watch chat: {{.Error}}"
       info_watch_chat_started: "Started watching chat: {{.Chat}}"
       info_already_watching_chat: "Already watching this chat"
       info_watch_list_empty: "No chats are being watched currently"
       info_watch_list_header: "Currently watched chats:\n"
+      info_watch_list_storage_prefix: " (storage: "
+      info_watch_list_dir_prefix: " (dir: "
       info_watch_list_filter_prefix: " (filter: "
       info_watch_list_mediatype_prefix: " (mediatype: "
       error_unwatch_no_chat_provided: "Please provide a chat ID or username to unwatch"
@@ -181,6 +189,14 @@ bot:
       info_notify_enabled: "Task notifications are enabled for every chat you watch: each saved message and its result is reported here.\n\nUsage: /watch notify on|off"
       info_notify_disabled: "Task notifications are disabled for every chat you watch.\n\nUsage: /watch notify on|off"
       notify_detected: "<b>🔔 Watched message detected</b>\n<code>{{.Name}}</code>\nProgress will be reported here."
+      notify_album_detected: "<b>🔔 Watched album detected</b>\n<code>{{.Count}} files</code> starting with <code>{{.Name}}</code>\nProgress will be reported here."
+      catchup_summary: |-
+        🔔 Watch catch-up finished for chat <code>{{.Chat}}</code>
+
+        New messages fetched: <code>{{.Fetched}}</code>
+        Tasks enqueued: <code>{{.Enqueued}}</code> (albums: <code>{{.Albums}}</code>)
+        {{if .SkippedByCap}}Older messages skipped (cap {{.Cap}} reached): <code>{{.SkippedByCap}}</code> — save them manually with /save if needed.
+        {{end}}Files are enqueued, not yet saved: check the task result notifications.
     recovery:
       info_task_recovered: "♻️ Recovering an unfinished task from the last restart..."
       info_summary: |-

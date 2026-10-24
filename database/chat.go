@@ -37,3 +37,23 @@ func GetWatchChatsByChatID(ctx context.Context, chatID int64) ([]*WatchChat, err
 	}
 	return watchChats, nil
 }
+
+// ListAllWatchChats returns every watch row, for the boot catch-up walk.
+func ListAllWatchChats(ctx context.Context) ([]*WatchChat, error) {
+	var watchChats []*WatchChat
+	err := db.WithContext(ctx).Find(&watchChats).Error
+	if err != nil {
+		return nil, err
+	}
+	return watchChats, nil
+}
+
+// TouchWatchCursor advances a watch's last-seen message ID, never lowering it:
+// the guarded WHERE makes the write a no-op when a concurrent live event or a
+// backfill already recorded a newer (or equal) ID. First-boot init and every
+// advance funnel through this one guard.
+func TouchWatchCursor(ctx context.Context, watchID uint, messageID int64) error {
+	return db.WithContext(ctx).Model(&WatchChat{}).
+		Where("id = ? AND (last_message_id IS NULL OR last_message_id < ?)", watchID, messageID).
+		Update("last_message_id", messageID).Error
+}

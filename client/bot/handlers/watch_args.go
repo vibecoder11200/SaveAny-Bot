@@ -12,6 +12,8 @@ import (
 const (
 	watchFlagMsgRe     = "msgre:"
 	watchFlagMediaType = "mediatype:"
+	watchFlagStorage   = "storage:"
+	watchFlagDir       = "dir:"
 )
 
 // maxWatchRegexLen caps a stored watch regex. Compiled patterns allocate
@@ -20,11 +22,16 @@ const (
 // watch pin arbitrary memory and CPU on every event.
 const maxWatchRegexLen = 512
 
+// maxWatchDirLen mirrors dirutil.MaxRelDirPathLen for the stored dir: flag.
+const maxWatchDirLen = 512
+
 // watchArgs holds the parsed arguments of a /watch command.
 type watchArgs struct {
-	Chat      string
-	MsgRe     string
-	MediaType string
+	Chat        string
+	MsgRe       string
+	MediaType   string
+	StorageName string
+	DirPath     string
 }
 
 // parseWatchArgs errors, mapped by the caller to localized replies.
@@ -37,14 +44,18 @@ var (
 // multi-word msgre regex.
 func isWatchFlagToken(token string) bool {
 	return strings.HasPrefix(token, watchFlagMsgRe) ||
-		strings.HasPrefix(token, watchFlagMediaType)
+		strings.HasPrefix(token, watchFlagMediaType) ||
+		strings.HasPrefix(token, watchFlagStorage) ||
+		strings.HasPrefix(token, watchFlagDir)
 }
 
 // parseWatchArgs splits /watch args into the target chat and flag values.
-// Grammar: /watch <chat> [msgre:<regex>] [mediatype:<types>] — flags in any
-// order, all optional. The msgre value is the rest of its own token plus
-// every following non-flag token joined with " ", so regexes may contain
-// ':' and span words; a regex ends at the next flag token. The first
+// Grammar: /watch <chat> [storage:<name>] [dir:<path>] [msgre:<regex>]
+// [mediatype:<types>] — flags in any order, all optional. The msgre value is
+// the rest of its own token plus every following non-flag token joined with
+// " ", so regexes may contain ':' and span words; a regex ends at the next
+// flag token. storage:/dir: are single-token flags (quoted values survive
+// because the command line is split with a quote-aware splitter). The first
 // non-flag token is the chat; a later non-flag token outside a msgre tail is
 // a malformed leftover, and a later unknown "<x>:" token is an unsupported
 // filter type.
@@ -61,6 +72,10 @@ func parseWatchArgs(args []string) (watchArgs, error) {
 			}
 		case strings.HasPrefix(arg, watchFlagMediaType):
 			parsed.MediaType = strings.TrimPrefix(arg, watchFlagMediaType)
+		case strings.HasPrefix(arg, watchFlagStorage):
+			parsed.StorageName = strings.TrimPrefix(arg, watchFlagStorage)
+		case strings.HasPrefix(arg, watchFlagDir):
+			parsed.DirPath = strings.TrimPrefix(arg, watchFlagDir)
 		default:
 			if parsed.Chat == "" {
 				parsed.Chat = arg
