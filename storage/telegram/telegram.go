@@ -12,7 +12,6 @@ import (
 
 	"github.com/celestix/gotgproto/ext"
 	"github.com/charmbracelet/log"
-	"github.com/duke-git/lancet/v2/retry"
 	"github.com/duke-git/lancet/v2/slice"
 	"github.com/duke-git/lancet/v2/validator"
 	"github.com/gabriel-vasile/mimetype"
@@ -420,9 +419,11 @@ func (t *Telegram) prepareMedia(
 					doc = doc.Thumb(thumb)
 				}
 			}
-			rs.Seek(0, io.SeekStart)
+			_, seekErr := rs.Seek(0, io.SeekStart)
 			var info *VideoMetadata
-			if mtypeStr == "video/mp4" {
+			if seekErr != nil {
+				err = seekErr
+			} else if mtypeStr == "video/mp4" {
 				info, err = getMP4Meta(rs)
 				if err != nil || !usableVideoMeta(info) {
 					// gomedia failed OR produced degenerate values (HEVC,
@@ -586,123 +587,153 @@ func (t *Telegram) saveMediaGroup(
 	group []batchMediaItem,
 	onProgress func(index int, uploaded, total int64),
 ) error {
-	err := retry.Retry(func() error {
-		if len(group) == 1 && group[0].useSingleSave {
-			mediaItem := group[0]
-			item := mediaItem.item
-			if _, err := item.Reader.Seek(0, io.SeekStart); err != nil {
-				return fmt.Errorf("failed to seek batch item: %w", err)
-			}
-			itemCtx := context.WithValue(ctx, ctxkey.ContentLength, item.Size)
-			if item.PreserveCaption {
-				itemCtx = storagetypes.WithSourceCaption(itemCtx, item.Caption)
-			}
-			if onProgress == nil {
-				return t.Save(itemCtx, item.Reader, item.StoragePath)
-			}
-			return t.SaveWithProgress(itemCtx, item.Reader, item.StoragePath, func(uploaded, total int64) {
-				onProgress(mediaItem.index, uploaded, total)
-			})
-		}
-		if err := t.limiter.Wait(ctx); err != nil {
-			return fmt.Errorf("rate limit failed: %w", err)
-		}
-
-		prepared := make([]preparedMedia, 0, len(group))
-		for _, mediaItem := range group {
-			item := mediaItem.item
-			if _, err := item.Reader.Seek(0, io.SeekStart); err != nil {
-				return fmt.Errorf("failed to seek batch item: %w", err)
-			}
-			var captionOverride *string
-			if item.PreserveCaption {
-				captionOverride = &item.Caption
-			}
-			progress := batchItemUploadProgress(mediaItem, onProgress)
-			media, err := t.prepareMedia(ctx, tctx, item.Reader, item.StoragePath, item.Size, captionOverride, progress)
-			if err != nil {
-				return err
-			}
-			prepared = append(prepared, *media)
-		}
-
-		builder := t.sendBuilder(tctx.Sender.WithUploader(prepared[0].uploader).To(prepared[0].peer))
-		savedPaths := make([]string, 0, len(group))
-		for _, mediaItem := range group {
-			savedPaths = append(savedPaths, path.Clean(mediaItem.item.StoragePath))
-		}
-		if len(prepared) == 1 {
-			_, err := builder.Media(ctx, prepared[0].media)
-			if err == nil {
-				t.recordSaved(ctx, savedPaths...)
-			}
-			return err
-		}
-		// Telegram groups photos with videos, and documents with documents —
-		// but never a plain document into a photo/video album. A video whose
-		// metadata could not be read goes out as a plain document; when such
-		// an item lands in a media group, the whole group degrades to a pure
-		// file album instead of being rejected wholesale.
-		if albumMixesDocWithMedia(prepared) {
-			log.FromContext(ctx).Warnf("Album mixes plain documents with photos/videos (%s) — sending the whole group as a file album", describeAlbum(prepared))
-			for i := range prepared {
-				fileDoc := message.File(prepared[i].rawFile, mediaCaption(prepared[i].filename, prepared[i].captionOverride)...).
-					Filename(prepared[i].filename)
-				if prepared[i].mime != "" {
-					fileDoc = fileDoc.MIME(prepared[i].mime)
-				}
-				prepared[i].media = fileDoc
-			}
-		}
-		media := make([]message.MultiMediaOption, len(prepared))
-		for i := range prepared {
-			media[i] = prepared[i].media
-		}
-		if _, err := builder.Album(ctx, media[0], media[1:]...); err != nil {
-			return fmt.Errorf("failed to send media album (%s): %w", describeAlbum(prepared), err)
-		}
-		t.recordSaved(ctx, savedPaths...)
-		return nil
-	}, retry.Context(ctx), retry.RetryTimes(uint(config.C().Retry)))
-	if err == nil || len(group) == 1 || !isMediaRejectedByTelegram(err) {
-		return err
-	}
-	// Telegram rejected the album as a whole (MEDIA_*): the group send is
-	// atomic, nothing was delivered, so the items can still be saved one by
-	// one — one problematic file must not doom its whole group. Losing the
-	// album grouping beats losing the files.
-	log.FromContext(ctx).Warnf("Album send rejected by Telegram (%v), falling back to %d individual message(s)", err, len(group))
-	for _, mediaItem := range group {
+	if len(group) == 1 && group[0].useSingleSave {
+		mediaItem := group[0]
 		item := mediaItem.item
-		if _, serr := item.Reader.Seek(0, io.SeekStart); serr != nil {
-			return fmt.Errorf("album send rejected (%v); seek %s for single send: %w", err, item.StoragePath, serr)
+		if _, err := item.Reader.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("failed to seek batch item: %w", err)
 		}
 		itemCtx := context.WithValue(ctx, ctxkey.ContentLength, item.Size)
 		if item.PreserveCaption {
 			itemCtx = storagetypes.WithSourceCaption(itemCtx, item.Caption)
 		}
-		var serr error
 		if onProgress == nil {
-			serr = t.Save(itemCtx, item.Reader, item.StoragePath)
-		} else {
-			serr = t.SaveWithProgress(itemCtx, item.Reader, item.StoragePath, func(uploaded, total int64) {
-				onProgress(mediaItem.index, uploaded, total)
-			})
+			return t.Save(itemCtx, item.Reader, item.StoragePath)
 		}
-		if serr != nil {
-			return fmt.Errorf("album send rejected (%v); single send of %s failed too: %w", err, item.StoragePath, serr)
+		return t.SaveWithProgress(itemCtx, item.Reader, item.StoragePath, func(uploaded, total int64) {
+			onProgress(mediaItem.index, uploaded, total)
+		})
+	}
+
+	var (
+		prepared []preparedMedia
+		err      error
+	)
+	// Retry counts TOTAL attempts, and even a Retry below 1 must allow the
+	// first one.
+	maxAttempts := max(config.C().Retry, 1)
+	for attempt := 1; ; attempt++ {
+		prepared, err = t.trySendGroup(ctx, tctx, group, onProgress)
+		if err == nil {
+			return nil
+		}
+		// A deterministic media rejection cannot be retried into success —
+		// another round of re-uploads would only burn bandwidth.
+		if isMediaRejectedByTelegram(err) {
+			break
+		}
+		if attempt >= maxAttempts {
+			return err
 		}
 	}
+	if len(group) == 1 || len(prepared) == 0 {
+		return err
+	}
+	// Telegram rejected the album as a whole: the group send is atomic,
+	// nothing was delivered, so the items go out one by one — one
+	// problematic file must not doom its whole group. The uploaded file
+	// handles are reused, so the fallback sends no bytes again; losing the
+	// album grouping beats losing the files.
+	log.FromContext(ctx).Warnf("Album send rejected by Telegram (%v), falling back to %d individual message(s)", err, len(prepared))
+	savedPaths := groupStoragePaths(group)
+	for _, p := range prepared {
+		builder := t.sendBuilder(tctx.Sender.WithUploader(p.uploader).To(p.peer))
+		if _, serr := builder.Media(ctx, p.media); serr != nil {
+			return fmt.Errorf("album send rejected (%v); single send of %s failed too: %w", err, p.filename, serr)
+		}
+	}
+	t.recordSaved(ctx, savedPaths...)
 	return nil
 }
 
+// groupStoragePaths returns the cleaned ledger paths of a group's items, in
+// order.
+func groupStoragePaths(group []batchMediaItem) []string {
+	paths := make([]string, len(group))
+	for i, mediaItem := range group {
+		paths[i] = path.Clean(mediaItem.item.StoragePath)
+	}
+	return paths
+}
+
+// trySendGroup prepares (uploads) every item of the group and sends them as
+// one album — or as a single message for one-item groups. It returns the
+// prepared items even on send failure, so callers can reuse the already
+// uploaded handles for a per-item fallback.
+func (t *Telegram) trySendGroup(
+	ctx context.Context,
+	tctx *ext.Context,
+	group []batchMediaItem,
+	onProgress func(index int, uploaded, total int64),
+) ([]preparedMedia, error) {
+	if err := t.limiter.Wait(ctx); err != nil {
+		return nil, fmt.Errorf("rate limit failed: %w", err)
+	}
+
+	prepared := make([]preparedMedia, 0, len(group))
+	for _, mediaItem := range group {
+		item := mediaItem.item
+		if _, err := item.Reader.Seek(0, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("failed to seek batch item: %w", err)
+		}
+		var captionOverride *string
+		if item.PreserveCaption {
+			captionOverride = &item.Caption
+		}
+		progress := batchItemUploadProgress(mediaItem, onProgress)
+		media, err := t.prepareMedia(ctx, tctx, item.Reader, item.StoragePath, item.Size, captionOverride, progress)
+		if err != nil {
+			return nil, err
+		}
+		prepared = append(prepared, *media)
+	}
+
+	savedPaths := groupStoragePaths(group)
+	builder := t.sendBuilder(tctx.Sender.WithUploader(prepared[0].uploader).To(prepared[0].peer))
+	if len(prepared) == 1 {
+		_, err := builder.Media(ctx, prepared[0].media)
+		if err == nil {
+			t.recordSaved(ctx, savedPaths...)
+		}
+		return prepared, err
+	}
+	// Telegram groups photos with videos, and documents with documents —
+	// but never a plain document into a photo/video album. A video whose
+	// metadata could not be read goes out as a plain document; when such
+	// an item lands in a media group, the whole group degrades to a pure
+	// file album instead of being rejected wholesale.
+	if albumMixesDocWithMedia(prepared) {
+		log.FromContext(ctx).Warnf("Album mixes plain documents with photos/videos (%s) — sending the whole group as a file album", describeAlbum(prepared))
+		for i := range prepared {
+			fileDoc := message.File(prepared[i].rawFile, mediaCaption(prepared[i].filename, prepared[i].captionOverride)...).
+				Filename(prepared[i].filename)
+			if prepared[i].mime != "" {
+				fileDoc = fileDoc.MIME(prepared[i].mime)
+			}
+			prepared[i].media = fileDoc
+		}
+	}
+	media := make([]message.MultiMediaOption, len(prepared))
+	for i := range prepared {
+		media[i] = prepared[i].media
+	}
+	if _, err := builder.Album(ctx, media[0], media[1:]...); err != nil {
+		return prepared, fmt.Errorf("failed to send media album (%s): %w", describeAlbum(prepared), err)
+	}
+	t.recordSaved(ctx, savedPaths...)
+	return prepared, nil
+}
+
 // isMediaRejectedByTelegram reports whether err is Telegram refusing the
-// media itself (not a transport/peer problem) — the cases where the album
-// request was rejected atomically and per-item sends are still worth trying.
+// media itself (not a transport/peer problem) — the deterministic cases
+// where the album request was rejected atomically and per-item sends are
+// still worth trying.
 func isMediaRejectedByTelegram(err error) bool {
 	return tgerr.Is(err, "MEDIA_INVALID") ||
 		tgerr.Is(err, "MEDIA_EMPTY") ||
-		tgerr.Is(err, "MEDIA_FILE_INVALID")
+		tgerr.Is(err, "PHOTO_EXT_INVALID") ||
+		tgerr.Is(err, "PHOTO_INVALID_DIMENSIONS") ||
+		tgerr.Is(err, "VIDEO_INVALID")
 }
 
 // albumMixesDocWithMedia reports whether the group combines a plain document

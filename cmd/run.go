@@ -115,31 +115,31 @@ func initAll(ctx context.Context) (<-chan struct{}, error) {
 }
 
 func cleanCache() {
-	if config.C().NoCleanCache {
+	basePath := config.C().Temp.BasePath
+	if basePath == "" || config.C().Stream {
+		// Stream mode never creates cache or resume state.
 		return
 	}
-	if config.C().Temp.BasePath != "" && !config.C().Stream {
-		if slices.Contains([]string{"/", ".", "\\", ".."}, filepath.Clean(config.C().Temp.BasePath)) {
-			log.Error("Invalid cache directory", "path", config.C().Temp.BasePath)
-			return
-		}
-		currentDir, err := os.Getwd()
-		if err != nil {
-			log.Error("Failed to get working directory", "error", err)
-			return
-		}
-		cachePath := filepath.Join(currentDir, config.C().Temp.BasePath)
-		cachePath, err = filepath.Abs(cachePath)
-		if err != nil {
-			log.Error("Failed to get absolute cache path", "error", err)
-			return
-		}
+	if slices.Contains([]string{"/", ".", "\\", ".."}, filepath.Clean(basePath)) {
+		log.Error("Invalid cache directory", "path", basePath)
+		return
+	}
+	// filepath.Abs keeps an absolute BasePath intact — filepath.Join with
+	// the working dir would mangle it into a nonexistent path.
+	cachePath, err := filepath.Abs(basePath)
+	if err != nil {
+		log.Error("Failed to get absolute cache path", "error", err)
+		return
+	}
+	if !config.C().NoCleanCache {
 		log.Info("Cleaning cache directory", "path", cachePath)
 		if err := cleanCacheDir(cachePath); err != nil {
 			log.Error("Failed to clean cache directory", "error", err)
 		}
-		cleanStaleResumeStates(filepath.Join(cachePath, tdler.ResumeDirName))
 	}
+	// Resume state accumulates regardless of the no-clean-cache opt-out,
+	// so its GC runs even then.
+	cleanStaleResumeStates(filepath.Join(cachePath, tdler.ResumeDirName))
 }
 
 // cleanCacheDir removes everything inside the cache directory except the
