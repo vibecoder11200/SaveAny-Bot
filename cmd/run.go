@@ -138,5 +138,37 @@ func cleanCache() {
 		if err := fsutil.RemoveAllInDir(cachePath); err != nil {
 			log.Error("Failed to clean cache directory", "error", err)
 		}
+		cleanStaleResumeStates(cachePath + "-resume")
+	}
+}
+
+// cleanStaleResumeStates prunes resume .part/.bitmap files that have not been
+// touched for a week: interrupted downloads that will never be retried again
+// (cancelled permanently, destination changed) would otherwise linger in the
+// resume dir forever, since nothing else cleans it.
+func cleanStaleResumeStates(resumePath string) {
+	entries, err := os.ReadDir(resumePath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Error("Failed to scan resume directory", "path", resumePath, "error", err)
+		}
+		return
+	}
+	cutoff := time.Now().Add(-7 * 24 * time.Hour)
+	removed := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(resumePath, entry.Name())); err == nil {
+			removed++
+		}
+	}
+	if removed > 0 {
+		log.Info("Removed stale resume states", "count", removed, "dir", resumePath)
 	}
 }

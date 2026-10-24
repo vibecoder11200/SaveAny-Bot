@@ -43,6 +43,8 @@ func executeStream(ctx context.Context, task *Task) error {
 	wr := newWriter(dlCtx, pw, task.Progress, task, wdog.Kick)
 	errg.Go(func() error {
 		defer pw.Close()
+		// Stream mode pipes bytes straight into the storage writer, so no
+		// resume state is kept: an interrupted stream restarts from zero.
 		logger.Info("Starting file download in stream mode")
 		_, err := tdler.NewDownloaderWithMeter(task.File, meter).Stream(dlCtx, wr)
 		if err != nil {

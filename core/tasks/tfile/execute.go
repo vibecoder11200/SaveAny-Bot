@@ -73,32 +73,33 @@ func (t *Task) Execute(ctx context.Context) error {
 	}
 
 	logger.Info("Starting file download")
-	localFile, err := fsutil.CreateFile(t.localPath)
-	if err != nil {
-		return fmt.Errorf("failed to create local file: %w", err)
-	}
-	defer func() {
-		if err := localFile.CloseAndRemove(); err != nil {
-			logger.Errorf("Failed to close local file: %v", err)
-		}
-	}()
 	wdog, wctx := dlutil.NewStallWatchdog(ctx, dlutil.DownloadStallTimeout)
 	defer wdog.Close()
 	dlCtx, dlCancel := context.WithCancel(wctx)
 	defer dlCancel()
 	meter := dlutil.NewFloodWaitMeter(dlCtx, dlCancel)
 	defer meter.Close()
-	wrAt := newWriterAt(dlCtx, localFile, t.Progress, t, wdog.Kick)
 
+	var err error
 	defer func() {
 		if t.Progress != nil {
 			t.Progress.OnDone(ctx, t, err)
 		}
 	}()
-	err = tdler.DownloadParallelWithRefresh(ctx, t.File, meter, dlCtx, wrAt)
+	// dlCtx, not ctx: the stall watchdog and flood-crawl meter cancel it, and
+	// the download RPCs must observe that cancellation.
+	err = tdler.DownloadToCache(dlCtx, logger, t.File, t.localPath,
+		tdler.DownloadResumeKey(t.File, t.Storage.Name(), t.Path), meter,
+		func(w io.WriterAt) io.WriterAt {
+			return newWriterAt(dlCtx, w, t.Progress, t, wdog.Kick)
+		})
 	if err != nil {
 		return dlutil.DownloadFailure(err, wdog, meter)
 	}
+	// The cache file is this task's alone; remove it on every exit like the
+	// old CloseAndRemove defer did (resumable downloads keep their state in
+	// the resume dir, not here).
+	defer func() { _ = os.Remove(t.localPath) }()
 	logger.Infof("File downloaded successfully")
 	if path.Ext(t.File.Name()) == "" {
 		ext := fsutil.DetectFileExt(t.localPath)

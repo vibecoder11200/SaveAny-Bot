@@ -1,6 +1,7 @@
 package tfile
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/gotd/td/tg"
@@ -139,4 +140,35 @@ func TestFileUniqueIDFromBothConstructors(t *testing.T) {
 	if got := plain.FileUniqueID(); got != "" {
 		t.Fatalf("plain NewTGFile FileUniqueID = %q, want empty", got)
 	}
+}
+
+// A resumable download refreshes the file reference while sibling chunk
+// goroutines keep reading the location; without the internal lock this is a
+// data race the -race detector catches.
+func TestLocationConcurrentRefresh(t *testing.T) {
+	file, err := FromMediaMessage(photoMedia([]byte("old")), &tg.Client{}, &tg.Message{ID: 1})
+	if err != nil {
+		t.Fatalf("FromMediaMessage: %v", err)
+	}
+	var wg sync.WaitGroup
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				_ = file.Location()
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			if err := file.RefreshLocation(photoMedia([]byte("ref"))); err != nil {
+				t.Errorf("RefreshLocation: %v", err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
 }

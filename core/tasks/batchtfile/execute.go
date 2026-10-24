@@ -484,6 +484,51 @@ func (t *Task) dedupSkipByHash(ctx context.Context, logger *log.Logger, elem *Ta
 	return true
 }
 
+// downloadElemToCache downloads the element's file into its cache file over
+// the resumable path (tdler.DownloadToCache), wiring item progress, stall
+// detection and flood-wait accounting, and extending the destination path
+// with a detected extension when the file name carries none. A failed
+// download is marked on the item and returned as a classified dlutil error.
+func (t *Task) downloadElemToCache(ctx context.Context, elem *TaskElement, logger *log.Logger) error {
+	logger.Info("Starting file download")
+	wdog, wctx := dlutil.NewStallWatchdog(ctx, dlutil.DownloadStallTimeout)
+	defer wdog.Close()
+	dlCtx, dlCancel := context.WithCancel(wctx)
+	defer dlCancel()
+	meter := dlutil.NewFloodWaitMeter(dlCtx, dlCancel)
+	defer meter.Close()
+	// dlCtx, not ctx: the stall watchdog and flood-crawl meter cancel it, and
+	// the download RPCs must observe that cancellation.
+	err := tdler.DownloadToCache(dlCtx, logger, elem.File, elem.localPath,
+		tdler.DownloadResumeKey(elem.File, elem.Storage.Name(), elem.Path), meter,
+		func(w io.WriterAt) io.WriterAt {
+			return ioutil.NewProgressWriterAt(w, func(n int) {
+				wdog.Kick()
+				t.recordItemDownload(elem.ID, int64(n), time.Now())
+				downloaded := t.downloaded.Add(int64(n))
+				t.notifyProgress(ctx)
+				taskevent.Emit(ctx, taskevent.Event{
+					TaskID:          t.ID,
+					Phase:           taskevent.PhaseProgress,
+					TotalBytes:      t.totalSize,
+					DownloadedBytes: downloaded,
+				})
+			})
+		})
+	if err != nil {
+		t.markItemFailed(ctx, elem.ID, FailureStageDownload, err)
+		t.notifyStateChange(ctx)
+		return dlutil.DownloadFailure(err, wdog, meter)
+	}
+	logger.Info("File downloaded successfully")
+	if path.Ext(elem.FileName()) == "" {
+		if ext := fsutil.DetectFileExt(elem.localPath); ext != "" {
+			elem.Path += ext
+		}
+	}
+	return nil
+}
+
 func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 	logger := log.FromContext(ctx).WithPrefix(fmt.Sprintf("file[%s]", elem.File.Name()))
 	if t.SkipIfExists && elem.Storage.Exists(ctx, elem.Path) {
@@ -506,48 +551,8 @@ func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 		t.notifyStateChange(ctx)
 		return fmt.Errorf("failed to download file: %w", err)
 	}
-	logger.Info("Starting file download")
-	localFile, err := fsutil.CreateFile(elem.localPath)
-	if err != nil {
-		t.markItemFailed(ctx, elem.ID, FailureStageCache, err)
-		t.notifyStateChange(ctx)
-		return fmt.Errorf("failed to create local file: %w", err)
-	}
-	wdog, wctx := dlutil.NewStallWatchdog(ctx, dlutil.DownloadStallTimeout)
-	defer wdog.Close()
-	dlCtx, dlCancel := context.WithCancel(wctx)
-	defer dlCancel()
-	meter := dlutil.NewFloodWaitMeter(dlCtx, dlCancel)
-	defer meter.Close()
-	wrAt := ioutil.NewProgressWriterAt(localFile, func(n int) {
-		wdog.Kick()
-		t.recordItemDownload(elem.ID, int64(n), time.Now())
-		downloaded := t.downloaded.Add(int64(n))
-		t.notifyProgress(ctx)
-		taskevent.Emit(ctx, taskevent.Event{
-			TaskID:          t.ID,
-			Phase:           taskevent.PhaseProgress,
-			TotalBytes:      t.totalSize,
-			DownloadedBytes: downloaded,
-		})
-	})
-	downloadErr := tdler.DownloadParallelWithRefresh(ctx, elem.File, meter, dlCtx, wrAt)
-	closeErr := localFile.Close()
-	if downloadErr != nil {
-		t.markItemFailed(ctx, elem.ID, FailureStageDownload, downloadErr)
-		t.notifyStateChange(ctx)
-		return dlutil.DownloadFailure(downloadErr, wdog, meter)
-	}
-	if closeErr != nil {
-		t.markItemFailed(ctx, elem.ID, FailureStageCache, closeErr)
-		t.notifyStateChange(ctx)
-		return fmt.Errorf("failed to close cache file: %w", closeErr)
-	}
-	logger.Info("File downloaded successfully")
-	if path.Ext(elem.FileName()) == "" {
-		if ext := fsutil.DetectFileExt(elem.localPath); ext != "" {
-			elem.Path += ext
-		}
+	if err := t.downloadElemToCache(ctx, elem, logger); err != nil {
+		return err
 	}
 	t.markItemDownloaded(elem.ID)
 	t.notifyProgress(ctx)
@@ -582,51 +587,14 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 	if elem.stream {
 		return t.processStreamElem(ctx, elem, logger)
 	}
-	logger.Info("Starting file download")
-	localFile, err := fsutil.CreateFile(elem.localPath)
-	if err != nil {
-		t.markItemFailed(ctx, elem.ID, FailureStageCache, err)
-		t.notifyStateChange(ctx)
-		return fmt.Errorf("failed to create local file: %w", err)
+	if err := t.downloadElemToCache(ctx, &elem, logger); err != nil {
+		return err
 	}
-	defer func() {
-		if err := localFile.CloseAndRemove(); err != nil {
-			logger.Errorf("Failed to close local file: %v", err)
-		}
-	}()
-	wdog, wctx := dlutil.NewStallWatchdog(ctx, dlutil.DownloadStallTimeout)
-	defer wdog.Close()
-	dlCtx, dlCancel := context.WithCancel(wctx)
-	defer dlCancel()
-	meter := dlutil.NewFloodWaitMeter(dlCtx, dlCancel)
-	defer meter.Close()
-	wrAt := ioutil.NewProgressWriterAt(localFile, func(n int) {
-		wdog.Kick()
-		t.recordItemDownload(elem.ID, int64(n), time.Now())
-		downloaded := t.downloaded.Add(int64(n))
-		t.notifyProgress(ctx)
-		taskevent.Emit(ctx, taskevent.Event{
-			TaskID:          t.ID,
-			Phase:           taskevent.PhaseProgress,
-			TotalBytes:      t.totalSize,
-			DownloadedBytes: downloaded,
-		})
-	})
-	err = tdler.DownloadParallelWithRefresh(ctx, elem.File, meter, dlCtx, wrAt)
-	if err != nil {
-		t.markItemFailed(ctx, elem.ID, FailureStageDownload, err)
-		t.notifyStateChange(ctx)
-		return dlutil.DownloadFailure(err, wdog, meter)
-	}
-	logger.Info("File downloaded successfully")
-	if path.Ext(elem.FileName()) == "" {
-		ext := fsutil.DetectFileExt(elem.localPath)
-		if ext != "" {
-			elem.Path = elem.Path + ext
-		}
-	}
-	var fileStat os.FileInfo
-	fileStat, err = os.Stat(elem.localPath)
+	// The cache file is this element's alone; remove it on every exit like
+	// the old CloseAndRemove defer did (resumable downloads keep their state
+	// in the resume dir, not here).
+	defer func() { _ = os.Remove(elem.localPath) }()
+	fileStat, err := os.Stat(elem.localPath)
 	if err != nil {
 		t.markItemFailed(ctx, elem.ID, FailureStageCache, err)
 		t.notifyStateChange(ctx)
@@ -732,6 +700,8 @@ func (t *Task) processStreamElem(ctx context.Context, elem TaskElement, logger *
 	})
 	errg.Go(func() error {
 		defer pw.Close()
+		// Stream mode pipes bytes straight into the storage writer, so no
+		// resume state is kept: an interrupted stream restarts from zero.
 		logger.Info("Starting file download in stream mode")
 		_, err := tdler.NewDownloaderWithMeter(elem.File, streamMeter).Stream(streamDlCtx, wr)
 		if err != nil {

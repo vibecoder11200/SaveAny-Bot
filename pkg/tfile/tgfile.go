@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 
 	"github.com/celestix/gotgproto/functions"
 	"github.com/gotd/td/telegram/downloader"
@@ -36,6 +37,10 @@ type tgFile struct {
 	message      *tg.Message
 	dler         downloader.Client
 	fileUniqueID string
+
+	// locationMu guards location: a resumable download refreshes the file
+	// reference while sibling chunk goroutines read it concurrently.
+	locationMu sync.RWMutex
 }
 
 func (f *tgFile) SetName(name string) {
@@ -43,6 +48,8 @@ func (f *tgFile) SetName(name string) {
 }
 
 func (f *tgFile) Location() tg.InputFileLocationClass {
+	f.locationMu.RLock()
+	defer f.locationMu.RUnlock()
 	return f.location
 }
 
@@ -67,7 +74,9 @@ func (f *tgFile) RefreshLocation(media tg.MessageMediaClass) error {
 	if err != nil {
 		return err
 	}
+	f.locationMu.Lock()
 	f.location = location
+	f.locationMu.Unlock()
 	return nil
 }
 
