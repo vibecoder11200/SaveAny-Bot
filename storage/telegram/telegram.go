@@ -46,10 +46,27 @@ type Telegram struct {
 	limiter *rate.Limiter
 }
 
+// album kind of a prepared media item. Telegram only groups photos with
+// videos; plain documents form their own file albums, and MIXING a plain
+// document into a photo/video album makes sendMultiMedia reject the whole
+// request (MEDIA_INVALID/MEDIA_EMPTY).
+const (
+	mediaKindPhoto = "photo"
+	mediaKindVideo = "video"
+	mediaKindDoc   = "doc"
+)
+
 type preparedMedia struct {
 	peer     tg.InputPeerClass
 	uploader *uploader.Uploader
 	media    message.MultiMediaOption
+	kind     string
+	// rawFile, filename, mime and captionOverride allow rebuilding the item
+	// as a plain document when its group turns out to mix kinds.
+	rawFile         tg.InputFileClass
+	filename        string
+	mime            string
+	captionOverride *string
 }
 
 type batchMediaItem struct {
@@ -392,6 +409,7 @@ func (t *Telegram) prepareMedia(
 		doc = doc.MIME(mtype.String())
 	}
 	var media message.MultiMediaOption = doc
+	kind := mediaKindDoc
 	if mtype != nil && rs != nil {
 		switch mtypeStr := mtype.String(); {
 		case strings.HasPrefix(mtypeStr, "video/"):
@@ -422,19 +440,31 @@ func (t *Telegram) prepareMedia(
 					Duration(time.Duration(info.Duration)*time.Second).
 					Resolution(info.Width, info.Height).
 					SupportsStreaming()
+				kind = mediaKindVideo
 			} else {
 				media = doc
+				kind = mediaKindDoc
 			}
 		case strings.HasPrefix(mtypeStr, "audio/"):
 			media = doc.Audio().Title(filename)
 		case strings.HasPrefix(mtypeStr, "image/") && !strings.HasSuffix(mtypeStr, "webp"):
 			media = message.UploadedPhoto(file, caption...)
+			kind = mediaKindPhoto
 		}
 	}
+	mimeStr := ""
+	if mtype != nil {
+		mimeStr = mtype.String()
+	}
 	return &preparedMedia{
-		peer:     peer,
-		uploader: upler,
-		media:    media,
+		peer:            peer,
+		uploader:        upler,
+		media:           media,
+		kind:            kind,
+		rawFile:         file,
+		filename:        filename,
+		mime:            mimeStr,
+		captionOverride: captionOverride,
 	}, nil
 }
 
@@ -599,12 +629,28 @@ func (t *Telegram) saveMediaGroup(
 			}
 			return err
 		}
+		// Telegram groups photos with videos, and documents with documents —
+		// but never a plain document into a photo/video album. A video whose
+		// metadata could not be read goes out as a plain document; when such
+		// an item lands in a media group, the whole group degrades to a pure
+		// file album instead of being rejected wholesale.
+		if albumMixesDocWithMedia(prepared) {
+			log.FromContext(ctx).Warnf("Album mixes plain documents with photos/videos (%s) — sending the whole group as a file album", describeAlbum(prepared))
+			for i := range prepared {
+				fileDoc := message.File(prepared[i].rawFile, mediaCaption(prepared[i].filename, prepared[i].captionOverride)...).
+					Filename(prepared[i].filename)
+				if prepared[i].mime != "" {
+					fileDoc = fileDoc.MIME(prepared[i].mime)
+				}
+				prepared[i].media = fileDoc
+			}
+		}
 		media := make([]message.MultiMediaOption, len(prepared))
 		for i := range prepared {
 			media[i] = prepared[i].media
 		}
 		if _, err := builder.Album(ctx, media[0], media[1:]...); err != nil {
-			return fmt.Errorf("failed to send media album: %w", err)
+			return fmt.Errorf("failed to send media album (%s): %w", describeAlbum(prepared), err)
 		}
 		t.recordSaved(ctx, savedPaths...)
 		return nil
@@ -648,6 +694,30 @@ func isMediaRejectedByTelegram(err error) bool {
 	return tgerr.Is(err, "MEDIA_INVALID") ||
 		tgerr.Is(err, "MEDIA_EMPTY") ||
 		tgerr.Is(err, "MEDIA_FILE_INVALID")
+}
+
+// albumMixesDocWithMedia reports whether the group combines a plain document
+// with photos or attribute-carrying videos — a combination Telegram's
+// sendMultiMedia rejects outright.
+func albumMixesDocWithMedia(prepared []preparedMedia) bool {
+	hasDoc, hasMedia := false, false
+	for _, p := range prepared {
+		if p.kind == mediaKindDoc {
+			hasDoc = true
+		} else {
+			hasMedia = true
+		}
+	}
+	return hasDoc && hasMedia
+}
+
+// describeAlbum renders a compact per-item composition for diagnostics.
+func describeAlbum(prepared []preparedMedia) string {
+	parts := make([]string, 0, len(prepared))
+	for _, p := range prepared {
+		parts = append(parts, p.kind+"("+p.filename+")")
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (t *Telegram) CannotStream() string {
