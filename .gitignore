@@ -19,3 +19,4 @@ saveany-bot
 # internal planning docs (contain server IPs / SSH paths) - never push
 plans/
 reports/
+.ak/
