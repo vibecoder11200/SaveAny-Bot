@@ -25,7 +25,6 @@ const (
 	BotMsgCmdDl                                           Key = "bot.msg.cmd.dl"
 	BotMsgCmdFnametmpl                                    Key = "bot.msg.cmd.fnametmpl"
 	BotMsgCmdHelp                                         Key = "bot.msg.cmd.help"
-	BotMsgCmdImport                                       Key = "bot.msg.cmd.import"
 	BotMsgCmdLswatch                                      Key = "bot.msg.cmd.lswatch"
 	BotMsgCmdParser                                       Key = "bot.msg.cmd.parser"
 	BotMsgCmdPurge                                        Key = "bot.msg.cmd.purge"

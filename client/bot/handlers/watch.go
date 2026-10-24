@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"path"
 	"regexp"
@@ -30,7 +31,7 @@ import (
 
 func handleWatchCmd(ctx *ext.Context, update *ext.Update) error {
 	logger := log.FromContext(ctx)
-	args := strings.Split(update.EffectiveMessage.Text, " ")
+	args := strings.Fields(update.EffectiveMessage.Text)
 	if len(args) < 2 {
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchHelpText)), nil)
 		return dispatcher.EndGroups
@@ -49,7 +50,23 @@ func handleWatchCmd(ctx *ext.Context, update *ext.Update) error {
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorDefaultStorageNotSet)), nil)
 		return dispatcher.EndGroups
 	}
-	chatArg := args[1]
+	// Filter syntax: /watch <chat> [msgre:<regex>] [mediatype:<types>]
+	// Flags go in any order; the msgre regex may contain ':' and span words.
+	parsed, err := parseWatchArgs(args[1:])
+	if err != nil {
+		switch {
+		case errors.Is(err, errWatchFilterTypeUnsupported):
+			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorFilterTypeUnsupported)), nil)
+		default:
+			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorFilterFormatInvalid)), nil)
+		}
+		return dispatcher.EndGroups
+	}
+	if parsed.Chat == "" {
+		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchHelpText)), nil)
+		return dispatcher.EndGroups
+	}
+	chatArg := parsed.Chat
 	chatID, err := tgutil.ParseChatID(ctx, chatArg)
 	if err != nil {
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidIdOrUsername, map[string]any{"Error": err.Error()})), nil)
@@ -64,58 +81,31 @@ func handleWatchCmd(ctx *ext.Context, update *ext.Update) error {
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchInfoAlreadyWatchingChat)), nil)
 		return dispatcher.EndGroups
 	}
-	// Filter syntax: /watch <chat> [msgre:<regex>] [mediatype:<types>]
-	// Each filter occupies its own column; both may be combined.
 	filter := ""
-	mediaType := ""
-	if len(args) > 2 {
-		rest := make([]string, 0, len(args)-2)
-		for _, arg := range args[2:] {
-			if strings.HasPrefix(arg, "mediatype:") {
-				mediaType = strings.TrimPrefix(arg, "mediatype:")
-				continue
-			}
-			rest = append(rest, arg)
-		}
-		if len(rest) > 0 {
-			filterArg := strings.Join(rest, " ")
-			filterType, _, _ := strings.Cut(filterArg, ":")
-			filterData := strings.Split(filterArg, ":")[1]
-			if filterType == "" || filterData == "" {
-				ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorFilterFormatInvalid)), nil)
-				return dispatcher.EndGroups
-			}
-			switch filterType {
-			case "msgre":
-				_, err := regexp.Compile(filterData)
-				if err != nil {
-					ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidRegex, map[string]any{"Error": err.Error()})), nil)
-					return dispatcher.EndGroups
-				}
-				filter = filterType + ":" + filterData
-			default:
-				ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorFilterTypeUnsupported)), nil)
-				return dispatcher.EndGroups
-			}
-		}
-		if mediaType == "" && len(rest) < len(args)-2 {
-			// A bare "mediatype:" with no data is a malformed filter.
-			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorFilterFormatInvalid)), nil)
+	if parsed.MsgRe != "" {
+		if len(parsed.MsgRe) > maxWatchRegexLen {
+			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidRegex, map[string]any{"Error": "regex too long (max 512 characters)"})), nil)
 			return dispatcher.EndGroups
 		}
-		if mediaType != "" {
-			// Fail-closed: reject an unknown token now instead of storing a
-			// watch that silently never matches, and reject a spec that
-			// names no type at all (it would mean "allow everything").
-			parsed, err := mediautil.ParseMediaFilter(mediaType)
-			if err != nil {
-				ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidMediaTypeFilter, map[string]any{"Error": err.Error()})), nil)
-				return dispatcher.EndGroups
-			}
-			if parsed == nil {
-				ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorFilterFormatInvalid)), nil)
-				return dispatcher.EndGroups
-			}
+		if _, err := regexp.Compile(parsed.MsgRe); err != nil {
+			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidRegex, map[string]any{"Error": err.Error()})), nil)
+			return dispatcher.EndGroups
+		}
+		filter = watchFlagMsgRe + parsed.MsgRe
+	}
+	mediaType := parsed.MediaType
+	if mediaType != "" {
+		// Fail-closed: reject an unknown token now instead of storing a
+		// watch that silently never matches, and reject a spec that
+		// names no type at all (it would mean "allow everything").
+		parsedFilter, err := mediautil.ParseMediaFilter(mediaType)
+		if err != nil {
+			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidMediaTypeFilter, map[string]any{"Error": err.Error()})), nil)
+			return dispatcher.EndGroups
+		}
+		if parsedFilter == nil {
+			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorFilterFormatInvalid)), nil)
+			return dispatcher.EndGroups
 		}
 	}
 	if err := user.WatchChat(ctx, database.WatchChat{
@@ -275,22 +265,17 @@ func listenMediaMessageEvent(ch chan userclient.MediaMessageEvent, botCtx *ext.C
 				}
 			}
 			if chat.Filter != "" {
-				filter := strings.Split(chat.Filter, ":")
-				if len(filter) != 2 {
+				// The whole remainder after "msgre:" is the regex: filters
+				// containing ':' must not be re-split on it.
+				regex, ok := watchFilterRegex(chat.Filter)
+				if !ok {
+					// Stored filters are validated at creation; a failure here
+					// means corrupt data — match nothing rather than saving
+					// everything.
 					logger.Warnf("Invalid filter format in chat %d, skipping", chat.ChatID)
 					continue
 				}
-				filterType := filter[0]
-				filterData := filter[1]
-				switch filterType {
-				case "msgre":
-					if ok, err := regexp.MatchString(filterData, msgText); err != nil {
-						continue
-					} else if !ok {
-						continue
-					}
-				default:
-					logger.Warnf("Unsupported filter type %s in chat %d, skipping", filterType, chat.ChatID)
+				if !regex.MatchString(msgText) {
 					continue
 				}
 			}

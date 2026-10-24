@@ -29,17 +29,23 @@ bot:
       /silent - Toggle silent mode
       /storage - Set default storage
       /save [custom filename] - Save file
-      /import <storage_name> <dir_path> [channel_id] [filter] - Import files from storage to Telegram
       /dir - Manage storage directories
       /rule - Manage rules
       /config - Modify configuration
       /fnametmpl - Set custom filename template
       /parser - Manage parser plugins
       /task - Manage task queue
+      /cancel - Cancel task
+      /dl - Download files from given links
+      /aria2dl - Download files using Aria2
+      /ytdlp - Download video/audio using yt-dlp
+      /transfer - Transfer files between storages
       /watch - Watch chats and auto save (UserBot)
       /unwatch - Stop watching chats (UserBot)
       /lswatch - List watched chats (UserBot)
       /syncpeers - Sync peer chats (UserBot)
+      /id - Resolve a @username to its chat ID
+      /purge - Clear the saved ledgers of a storage
       /update - Check and upgrade to latest version
 
       Usage guide: https://sabot.unv.app/usage
@@ -53,7 +59,6 @@ bot:
       dl: "Download files from given links"
       aria2dl: "Download files using Aria2"
       ytdlp: "Download video/audio using yt-dlp"
-      import: "Import files from storage to Telegram"
       transfer: "Transfer files between storages"
       task: "Manage task queue"
       cancel: "Cancel task"
