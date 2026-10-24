@@ -15,6 +15,12 @@ import (
 
 var db *gorm.DB
 
+// DB exposes the handle for tests and one-off administrative tooling; call
+// Init first. Nil until then.
+func DB() *gorm.DB {
+	return db
+}
+
 func Init(ctx context.Context) {
 	logger := log.FromContext(ctx)
 	if err := os.MkdirAll(filepath.Dir(config.C().DB.Path), 0755); err != nil {

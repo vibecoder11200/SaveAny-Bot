@@ -70,5 +70,8 @@ func Register(disp dispatcher.Dispatcher, botCtx *ext.Context) {
 
 	if config.C().Telegram.Userbot.Enable {
 		go listenMediaMessageEvent(userclient.GetMediaMessageCh(), botCtx)
+		// Catch-up starts after the live listener: backfilled events feed
+		// the same intake and share its album buffer.
+		go runWatchCatchUp(botCtx)
 	}
 }

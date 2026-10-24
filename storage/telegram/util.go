@@ -200,3 +200,17 @@ func tryGetInputPeer(ctx *ext.Context, chatID int64) tg.InputPeerClass {
 	peer = ctx.PeerStorage.GetInputPeerById(int64(user))
 	return peer
 }
+
+// ResolveInputPeer resolves a stored chat ID to an input peer through the
+// peer storage's variant retry. Watch rows store the PLAIN channel id for
+// @username watches, while the peer storage keys are TDLib-marked
+// (-100…), so the plain lookup alone misses and the marked variants must be
+// tried. A nil result is a miss: the caller must skip rather than send to an
+// empty peer.
+func ResolveInputPeer(ctx *ext.Context, chatID int64) tg.InputPeerClass {
+	peer := tryGetInputPeer(ctx, chatID)
+	if peer == nil || peer.Zero() {
+		return nil
+	}
+	return peer
+}

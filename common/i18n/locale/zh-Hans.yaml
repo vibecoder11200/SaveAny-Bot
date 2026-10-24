@@ -195,7 +195,7 @@ bot:
 
         拉取新消息: <code>{{.Fetched}}</code> 条
         任务已加入队列: <code>{{.Enqueued}}</code> (相册: <code>{{.Albums}}</code>)
-        {{if .SkippedByCap}}更早的消息已跳过 (达到上限 {{.Cap}}): <code>{{.SkippedByCap}}</code> 条 — 如有需要请手动 /save.
+        {{if .Capped}}更早的消息已跳过 (达到单次启动上限 {{.Cap}}) — 如有需要请手动 /save.
         {{end}}文件已入队, 尚未保存完成: 请留意任务结果通知.
     recovery:
       info_task_recovered: "♻️ 正在恢复上次重启时未完成的任务..."

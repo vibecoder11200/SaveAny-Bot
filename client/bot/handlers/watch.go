@@ -238,6 +238,9 @@ type watchIntakeOpts struct {
 	// a non-overwrite strategy: overwrite disables dedup, and live/backfill
 	// overlap would then duplicate files.
 	strategyPin string
+	// counters, when set, observes durable enqueues (the catch-up summary
+	// counts tasks only after AddTask has succeeded).
+	counters *watchCatchUpCounters
 }
 
 // watchTargetSpec is a resolved watch destination in plain strings.
@@ -516,6 +519,9 @@ func processWatchSingle(ctx *ext.Context, botCtx *ext.Context, watch *database.W
 	if file.Message() != nil {
 		_ = database.TouchWatchCursor(ctx, watch.ID, int64(file.Message().ID))
 	}
+	if opts.counters != nil {
+		opts.counters.singles++
+	}
 	logger.Infof("Added media message task for user %d in chat %d: %s", watch.UserID, watch.ChatID, file.Name())
 }
 
@@ -588,6 +594,10 @@ func processWatchMediaGroup(ctx *ext.Context, botCtx *ext.Context, watch *databa
 			}
 		}
 		_ = database.TouchWatchCursor(ctx, watch.ID, maxMsgID)
+		if opts.counters != nil {
+			opts.counters.albumFiles += len(groupFiles)
+			opts.counters.albumTasks++
+		}
 		logger.Infof("Added watch album batch task for user %d in chat %d: %d files", watch.UserID, watch.ChatID, len(groupFiles))
 	}
 }

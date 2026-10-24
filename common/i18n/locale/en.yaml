@@ -195,7 +195,7 @@ bot:
 
         New messages fetched: <code>{{.Fetched}}</code>
         Tasks enqueued: <code>{{.Enqueued}}</code> (albums: <code>{{.Albums}}</code>)
-        {{if .SkippedByCap}}Older messages skipped (cap {{.Cap}} reached): <code>{{.SkippedByCap}}</code> — save them manually with /save if needed.
+        {{if .Capped}}Older messages were skipped (per-boot cap {{.Cap}} reached) — save them manually with /save if needed.
         {{end}}Files are enqueued, not yet saved: check the task result notifications.
     recovery:
       info_task_recovered: "♻️ Recovering an unfinished task from the last restart..."
