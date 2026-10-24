@@ -424,10 +424,14 @@ func (t *Telegram) prepareMedia(
 			var info *VideoMetadata
 			if mtypeStr == "video/mp4" {
 				info, err = getMP4Meta(rs)
-				if err != nil {
-					// Fallback to ffprobe if gomedia fails (e.g., malformed MP4)
+				if err != nil || !usableVideoMeta(info) {
+					// gomedia failed OR produced degenerate values (HEVC,
+					// odd boxes, zero dimensions in tkhd): ffprobe reads the
+					// actual streams and handles every container and codec.
 					rs.Seek(0, io.SeekStart)
-					info, err = getVideoMetadata(rs)
+					if probe, perr := getVideoMetadata(rs); perr == nil {
+						info, err = probe, nil
+					}
 				}
 			} else {
 				info, err = getVideoMetadata(rs)
@@ -435,7 +439,7 @@ func (t *Telegram) prepareMedia(
 			// A video attribute with zero duration or dimensions makes
 			// Telegram reject the whole send (MEDIA_INVALID); without usable
 			// metadata the file goes out as a plain document instead.
-			if err == nil && info != nil && info.Duration > 0 && info.Width > 0 && info.Height > 0 {
+			if err == nil && usableVideoMeta(info) {
 				media = doc.Video().
 					Duration(time.Duration(info.Duration)*time.Second).
 					Resolution(info.Width, info.Height).
@@ -447,7 +451,10 @@ func (t *Telegram) prepareMedia(
 			}
 		case strings.HasPrefix(mtypeStr, "audio/"):
 			media = doc.Audio().Title(filename)
-		case strings.HasPrefix(mtypeStr, "image/") && !strings.HasSuffix(mtypeStr, "webp"):
+		case mtypeStr == "image/jpeg" || mtypeStr == "image/png":
+			// Telegram's photo slot is jpeg-class: exotic stills (HEIC, AVIF,
+			// TIFF...) sent as InputMediaUploadedPhoto fail with
+			// PHOTO_EXT_INVALID — those must travel as documents.
 			media = message.UploadedPhoto(file, caption...)
 			kind = mediaKindPhoto
 		}
@@ -531,8 +538,10 @@ func (t *Telegram) inspectBatchItem(tctx *ext.Context, item storagetypes.BatchIt
 	}
 	mtypeStr := mtype.String()
 	forceFile := t.config.ForceFile || strings.HasPrefix(mtypeStr, "image/") && item.Size >= tglimit.MaxPhotoSize
+	// Same media-kind rule as prepareMedia: only jpeg-class stills may join
+	// photo/video albums; other images travel as single documents.
 	result.albumEligible = !forceFile && (strings.HasPrefix(mtypeStr, "video/") ||
-		strings.HasPrefix(mtypeStr, "image/") && mtypeStr != "image/webp" && mtypeStr != "image/gif")
+		mtypeStr == "image/jpeg" || mtypeStr == "image/png")
 	return result, nil
 }
 

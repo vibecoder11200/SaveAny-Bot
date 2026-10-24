@@ -66,7 +66,9 @@ func getMP4Meta(rs io.ReadSeeker) (metadata *VideoMetadata, err error) {
 	}
 
 	for _, track := range tracks {
-		if track.Cid == mp4.MP4_CODEC_H264 {
+		// H265 plays the same role as H264 here: go-mp4 demuxes both, and
+		// the track header carries dimensions for either codec.
+		if track.Cid == mp4.MP4_CODEC_H264 || track.Cid == mp4.MP4_CODEC_H265 {
 			info := d.GetMp4Info()
 			return &VideoMetadata{
 				Duration: int(info.Duration / info.Timescale),
@@ -76,7 +78,14 @@ func getMP4Meta(rs io.ReadSeeker) (metadata *VideoMetadata, err error) {
 		}
 	}
 
-	return nil, fmt.Errorf("no h264 track found")
+	return nil, fmt.Errorf("no h264/h265 track found")
+}
+
+// usableVideoMeta reports whether the probe result can back a
+// documentAttributeVideo: zero duration or dimensions make Telegram reject
+// the whole send.
+func usableVideoMeta(info *VideoMetadata) bool {
+	return info != nil && info.Duration > 0 && info.Width > 0 && info.Height > 0
 }
 
 // getVideoMetadata uses ffprobe to get video metadata
