@@ -348,14 +348,16 @@ func TestDownloadToCacheReusesCompletedPartAfterRestart(t *testing.T) {
 	}
 }
 
-func TestResumeDirIsSiblingOfCacheBase(t *testing.T) {
+func TestResumeDirInsideCacheBase(t *testing.T) {
 	cacheBase := setupResumeConfig(t)
-	want := filepath.Clean(cacheBase + "-resume")
+	// The resume dir must live INSIDE the cache base: the cache dir is
+	// commonly a bind mount and its parent is not — a sibling would put the
+	// final rename across a filesystem boundary (EXDEV). The trailing-slash
+	// default ("cache/") must not push it to "cache//.resume" either.
+	want := filepath.Join(filepath.Clean(cacheBase), ResumeDirName)
 	if got := filepath.Clean(ResumeDir()); got != want {
-		t.Fatalf("ResumeDir = %q, want sibling %q", got, want)
+		t.Fatalf("ResumeDir = %q, want %q", got, want)
 	}
-	// The default config value carries a trailing slash; the resume dir must
-	// still be a sibling, not a subdirectory the boot clean would wipe.
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
 	content := "[temp]\nbase_path = '" + filepath.ToSlash(cacheBase) + "/'\n"
@@ -366,7 +368,7 @@ func TestResumeDirIsSiblingOfCacheBase(t *testing.T) {
 		t.Fatalf("config init: %v", err)
 	}
 	if got := filepath.Clean(ResumeDir()); got != want {
-		t.Fatalf("ResumeDir with trailing slash = %q, want sibling %q", got, want)
+		t.Fatalf("ResumeDir with trailing slash = %q, want %q", got, want)
 	}
 }
 

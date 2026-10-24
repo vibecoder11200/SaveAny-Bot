@@ -16,7 +16,7 @@ import (
 	"github.com/krau/SaveAny-Bot/common/cache"
 	"github.com/krau/SaveAny-Bot/common/i18n"
 	"github.com/krau/SaveAny-Bot/common/selfupdate"
-	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
+	"github.com/krau/SaveAny-Bot/common/tdler"
 	"github.com/krau/SaveAny-Bot/config"
 	"github.com/krau/SaveAny-Bot/core"
 	"github.com/krau/SaveAny-Bot/database"
@@ -135,11 +135,33 @@ func cleanCache() {
 			return
 		}
 		log.Info("Cleaning cache directory", "path", cachePath)
-		if err := fsutil.RemoveAllInDir(cachePath); err != nil {
+		if err := cleanCacheDir(cachePath); err != nil {
 			log.Error("Failed to clean cache directory", "error", err)
 		}
-		cleanStaleResumeStates(cachePath + "-resume")
+		cleanStaleResumeStates(filepath.Join(cachePath, tdler.ResumeDirName))
 	}
+}
+
+// cleanCacheDir removes everything inside the cache directory except the
+// resume subdirectory: interrupted-download state must survive the boot
+// clean — that is the entire point of resumable downloads. It also drops
+// the sibling dir the 0.66.1 layout used, where state stranded outside the
+// cache mount could not be renamed back in (EXDEV) and is re-downloadable.
+func cleanCacheDir(cachePath string) error {
+	entries, err := os.ReadDir(cachePath)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() == tdler.ResumeDirName {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(cachePath, entry.Name())); err != nil {
+			return err
+		}
+	}
+	_ = os.RemoveAll(cachePath + "-resume")
+	return nil
 }
 
 // cleanStaleResumeStates prunes resume .part/.bitmap files that have not been

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -364,15 +365,18 @@ func RemoveResumeState(bitmapPath string) error {
 	return nil
 }
 
-// ResumeDir is the directory holding resumable .part/.bitmap state. It is a
-// sibling of the temp base so the startup cache clean — which wipes
-// everything inside the cache dir — leaves interrupted downloads intact.
-// The base is stripped of trailing separators first: the default config
-// value is "cache/", and "cache/-resume" would land INSIDE the wiped dir.
+// ResumeDirName names the resume subdirectory inside the cache base.
+const ResumeDirName = ".resume"
+
+// ResumeDir is the directory holding resumable .part/.bitmap state. It lives
+// INSIDE the cache base so the final rename onto a cache file never crosses
+// a filesystem boundary — the cache dir is commonly a bind mount, its
+// parent is not, and os.Rename across them fails with EXDEV. The startup
+// cache clean deliberately spares this subdirectory (cmd/run.go).
 func ResumeDir() string {
 	base := strings.TrimRight(config.C().Temp.BasePath, "/\\")
 	if base == "" {
 		base = "."
 	}
-	return base + "-resume"
+	return filepath.Join(base, ResumeDirName)
 }
