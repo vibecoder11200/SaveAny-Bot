@@ -348,6 +348,28 @@ func TestDownloadToCacheReusesCompletedPartAfterRestart(t *testing.T) {
 	}
 }
 
+func TestResumeDirIsSiblingOfCacheBase(t *testing.T) {
+	cacheBase := setupResumeConfig(t)
+	want := filepath.Clean(cacheBase + "-resume")
+	if got := filepath.Clean(ResumeDir()); got != want {
+		t.Fatalf("ResumeDir = %q, want sibling %q", got, want)
+	}
+	// The default config value carries a trailing slash; the resume dir must
+	// still be a sibling, not a subdirectory the boot clean would wipe.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	content := "[temp]\nbase_path = '" + filepath.ToSlash(cacheBase) + "/'\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := config.Init(context.Background(), cfgPath); err != nil {
+		t.Fatalf("config init: %v", err)
+	}
+	if got := filepath.Clean(ResumeDir()); got != want {
+		t.Fatalf("ResumeDir with trailing slash = %q, want sibling %q", got, want)
+	}
+}
+
 func TestDownloadResumeKey(t *testing.T) {
 	a := &fakeFile{fid: "doc:42", name: "a.bin"}
 	b := &fakeFile{fid: "doc:42", name: "a.bin"}

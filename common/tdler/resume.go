@@ -367,6 +367,12 @@ func RemoveResumeState(bitmapPath string) error {
 // ResumeDir is the directory holding resumable .part/.bitmap state. It is a
 // sibling of the temp base so the startup cache clean — which wipes
 // everything inside the cache dir — leaves interrupted downloads intact.
+// The base is stripped of trailing separators first: the default config
+// value is "cache/", and "cache/-resume" would land INSIDE the wiped dir.
 func ResumeDir() string {
-	return config.C().Temp.BasePath + "-resume"
+	base := strings.TrimRight(config.C().Temp.BasePath, "/\\")
+	if base == "" {
+		base = "."
+	}
+	return base + "-resume"
 }

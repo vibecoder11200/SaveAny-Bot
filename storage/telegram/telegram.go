@@ -20,6 +20,7 @@ import (
 	"github.com/gotd/td/telegram/message/styling"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
+	"github.com/gotd/td/tgerr"
 	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/config"
@@ -394,7 +395,6 @@ func (t *Telegram) prepareMedia(
 	if mtype != nil && rs != nil {
 		switch mtypeStr := mtype.String(); {
 		case strings.HasPrefix(mtypeStr, "video/"):
-			media = doc.Video().SupportsStreaming()
 			thumb, err := extractThumbFrame(rs)
 			if err == nil {
 				thumb, err := upler.FromBytes(ctx, "thumb.jpg", thumb)
@@ -403,28 +403,27 @@ func (t *Telegram) prepareMedia(
 				}
 			}
 			rs.Seek(0, io.SeekStart)
-			switch mtypeStr {
-			case "video/mp4":
-				info, err := getMP4Meta(rs)
+			var info *VideoMetadata
+			if mtypeStr == "video/mp4" {
+				info, err = getMP4Meta(rs)
 				if err != nil {
 					// Fallback to ffprobe if gomedia fails (e.g., malformed MP4)
 					rs.Seek(0, io.SeekStart)
 					info, err = getVideoMetadata(rs)
 				}
-				if err == nil {
-					media = doc.Video().
-						Duration(time.Duration(info.Duration)*time.Second).
-						Resolution(info.Width, info.Height).
-						SupportsStreaming()
-				}
-			default:
-				info, err := getVideoMetadata(rs)
-				if err == nil {
-					media = doc.Video().
-						Duration(time.Duration(info.Duration)*time.Second).
-						Resolution(info.Width, info.Height).
-						SupportsStreaming()
-				}
+			} else {
+				info, err = getVideoMetadata(rs)
+			}
+			// A video attribute with zero duration or dimensions makes
+			// Telegram reject the whole send (MEDIA_INVALID); without usable
+			// metadata the file goes out as a plain document instead.
+			if err == nil && info != nil && info.Duration > 0 && info.Width > 0 && info.Height > 0 {
+				media = doc.Video().
+					Duration(time.Duration(info.Duration)*time.Second).
+					Resolution(info.Width, info.Height).
+					SupportsStreaming()
+			} else {
+				media = doc
 			}
 		case strings.HasPrefix(mtypeStr, "audio/"):
 			media = doc.Audio().Title(filename)
@@ -548,7 +547,7 @@ func (t *Telegram) saveMediaGroup(
 	group []batchMediaItem,
 	onProgress func(index int, uploaded, total int64),
 ) error {
-	return retry.Retry(func() error {
+	err := retry.Retry(func() error {
 		if len(group) == 1 && group[0].useSingleSave {
 			mediaItem := group[0]
 			item := mediaItem.item
@@ -610,6 +609,45 @@ func (t *Telegram) saveMediaGroup(
 		t.recordSaved(ctx, savedPaths...)
 		return nil
 	}, retry.Context(ctx), retry.RetryTimes(uint(config.C().Retry)))
+	if err == nil || len(group) == 1 || !isMediaRejectedByTelegram(err) {
+		return err
+	}
+	// Telegram rejected the album as a whole (MEDIA_*): the group send is
+	// atomic, nothing was delivered, so the items can still be saved one by
+	// one — one problematic file must not doom its whole group. Losing the
+	// album grouping beats losing the files.
+	log.FromContext(ctx).Warnf("Album send rejected by Telegram (%v), falling back to %d individual message(s)", err, len(group))
+	for _, mediaItem := range group {
+		item := mediaItem.item
+		if _, serr := item.Reader.Seek(0, io.SeekStart); serr != nil {
+			return fmt.Errorf("album send rejected (%v); seek %s for single send: %w", err, item.StoragePath, serr)
+		}
+		itemCtx := context.WithValue(ctx, ctxkey.ContentLength, item.Size)
+		if item.PreserveCaption {
+			itemCtx = storagetypes.WithSourceCaption(itemCtx, item.Caption)
+		}
+		var serr error
+		if onProgress == nil {
+			serr = t.Save(itemCtx, item.Reader, item.StoragePath)
+		} else {
+			serr = t.SaveWithProgress(itemCtx, item.Reader, item.StoragePath, func(uploaded, total int64) {
+				onProgress(mediaItem.index, uploaded, total)
+			})
+		}
+		if serr != nil {
+			return fmt.Errorf("album send rejected (%v); single send of %s failed too: %w", err, item.StoragePath, serr)
+		}
+	}
+	return nil
+}
+
+// isMediaRejectedByTelegram reports whether err is Telegram refusing the
+// media itself (not a transport/peer problem) — the cases where the album
+// request was rejected atomically and per-item sends are still worth trying.
+func isMediaRejectedByTelegram(err error) bool {
+	return tgerr.Is(err, "MEDIA_INVALID") ||
+		tgerr.Is(err, "MEDIA_EMPTY") ||
+		tgerr.Is(err, "MEDIA_FILE_INVALID")
 }
 
 func (t *Telegram) CannotStream() string {
