@@ -22,9 +22,6 @@ const (
 // watch pin arbitrary memory and CPU on every event.
 const maxWatchRegexLen = 512
 
-// maxWatchDirLen mirrors dirutil.MaxRelDirPathLen for the stored dir: flag.
-const maxWatchDirLen = 512
-
 // watchArgs holds the parsed arguments of a /watch command.
 type watchArgs struct {
 	Chat        string

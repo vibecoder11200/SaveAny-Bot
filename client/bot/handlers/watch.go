@@ -383,12 +383,9 @@ func processMediaEventForWatch(botCtx *ext.Context, event userclient.MediaMessag
 		if !mediaFilter.Allows(mediautil.MediaType(file.Message().Media)) {
 			return
 		}
-	}
-	// No per-chat media type: fall back to the user's default filter.
-	if watch.MediaType == "" {
-		if !mediautil.UserMediaFilter(user).Allows(mediautil.MediaType(file.Message().Media)) {
-			return
-		}
+	} else if !mediautil.UserMediaFilter(user).Allows(mediautil.MediaType(file.Message().Media)) {
+		// No per-chat media type: fall back to the user's default filter.
+		return
 	}
 	if user.DefaultStorage == "" {
 		logger.Warnf("User %d has no default storage set, skipping media message handling", watch.UserID)

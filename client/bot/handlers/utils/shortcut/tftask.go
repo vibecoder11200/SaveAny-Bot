@@ -206,11 +206,13 @@ func partitionBatchFiles(files []tfile.TGFileMessage, deps batchPartitionDeps) (
 	}
 	albumFiles := make(map[int64][]albumFile)
 
-	// checkFlat runs the conflict and dedup filters for one file destined for
-	// a flat path and appends its element. A nil return means the file was
-	// either appended or intentionally filtered out (conflict ask-pending,
-	// skipped, or deduped); a non-nil return is a hard failure.
-	checkFlat := func(file tfile.TGFileMessage, fileStor storage.Storage, storPath string) error {
+	// filterAndAppend runs the conflict and dedup filters for one file
+	// destined for one (storage, path) and appends its element. A nil return
+	// means the file was either appended or intentionally filtered out
+	// (conflict ask-pending, skipped, or deduped); a non-nil return is a hard
+	// failure. errLabel suffixes the element-creation error log ("" for flat
+	// files, " for album file" inside an album).
+	filterAndAppend := func(file tfile.TGFileMessage, fileStor storage.Storage, storPath, errLabel string) error {
 		if strategy == tcbdata.ConflictStrategyAsk || strategy == tcbdata.ConflictStrategySkip {
 			exists := deps.exists(fileStor, storPath)
 			if exists && strategy == tcbdata.ConflictStrategyAsk {
@@ -234,7 +236,7 @@ func partitionBatchFiles(files []tfile.TGFileMessage, deps batchPartitionDeps) (
 		}
 		elem, err := batchtfile.NewTaskElement(fileStor, storPath, file)
 		if err != nil {
-			logger.Errorf("Failed to create task element: %s", err)
+			logger.Errorf("Failed to create task element%s: %s", errLabel, err)
 			return err
 		}
 		elems = append(elems, *elem)
@@ -263,32 +265,30 @@ func partitionBatchFiles(files []tfile.TGFileMessage, deps batchPartitionDeps) (
 			dirPath = ruleDir.String()
 			matchedDirPath = ruleDir
 		}
-		groupId, isGroup := file.Message().GetGroupedID()
+		groupID, isGroup := file.Message().GetGroupedID()
 		needAlbum := matchedDirPath.NeedNewForAlbum() ||
-			(deps.forceGroup && isGroup && groupId != 0)
+			(deps.forceGroup && isGroup && groupID != 0)
 		if !needAlbum {
 			storPath := path.Join(dirPath, file.Name())
-			if err := checkFlat(file, fileStor, storPath); err != nil {
+			if err := filterAndAppend(file, fileStor, storPath, ""); err != nil {
 				return nil, nil, nil, nil, err
 			}
 			continue
 		}
-		if !isGroup || groupId == 0 {
+		if !isGroup || groupID == 0 {
 			logger.Warnf("File %s is not in a group, skipping album handling", file.Name())
 			continue
 		}
 		// Album files live under the resolved directory; a NEW-FOR-ALBUM
 		// sentinel resolves to the caller's base dir (the sentinel string
-		// itself is never a path). The album subdirectory is named after the
-		// first file (loop below).
+		// itself is never a path, and it can only come from the rule layer —
+		// an override never sets it). The album subdirectory is named after
+		// the first file (loop below).
 		albumBase := dirPath
 		if matchedDirPath.NeedNewForAlbum() {
 			albumBase = deps.baseDir
-			if deps.override != nil {
-				albumBase = deps.override.DirPath
-			}
 		}
-		albumFiles[groupId] = append(albumFiles[groupId], albumFile{
+		albumFiles[groupID] = append(albumFiles[groupID], albumFile{
 			file:    file,
 			storage: fileStor,
 			dirPath: albumBase,
@@ -309,7 +309,7 @@ func partitionBatchFiles(files []tfile.TGFileMessage, deps batchPartitionDeps) (
 			// plain file — an album send needs at least two items, and
 			// dropping the survivor would silently lose it.
 			for _, af := range afiles {
-				if err := checkFlat(af.file, af.storage, path.Join(af.dirPath, af.file.Name())); err != nil {
+				if err := filterAndAppend(af.file, af.storage, path.Join(af.dirPath, af.file.Name()), ""); err != nil {
 					return nil, nil, nil, nil, err
 				}
 			}
@@ -320,31 +320,9 @@ func partitionBatchFiles(files []tfile.TGFileMessage, deps batchPartitionDeps) (
 		albumStor := afiles[0].storage
 		albumDir := deps.albumNameFor(albumStor, afiles[0].dirPath, afiles[0].file.Name())
 		for _, af := range afiles {
-			afstorPath := path.Join(af.dirPath, albumDir, af.file.Name())
-			if strategy == tcbdata.ConflictStrategyAsk || strategy == tcbdata.ConflictStrategySkip {
-				exists := deps.exists(albumStor, afstorPath)
-				if exists && strategy == tcbdata.ConflictStrategyAsk {
-					conflicts = append(conflicts, conflictutil.FormatPath(albumStor.Name(), afstorPath))
-					continue
-				}
-				if exists {
-					skipped = append(skipped, af.file.Name())
-					continue
-				}
-			}
-			if strategy != tcbdata.ConflictStrategyOverwrite {
-				if fid := af.file.FileUniqueID(); fid != "" && deps.dedupHas(albumStor.Name(), fid) {
-					logger.Infof("dedup skip (file-id %s): already saved to storage %s, path %s", fid, albumStor.Name(), afstorPath)
-					deduped = append(deduped, af.file.Name())
-					continue
-				}
-			}
-			elem, err := batchtfile.NewTaskElement(albumStor, afstorPath, af.file)
-			if err != nil {
-				logger.Errorf("Failed to create task element for album file: %s", err)
+			if err := filterAndAppend(af.file, albumStor, path.Join(af.dirPath, albumDir, af.file.Name()), " for album file"); err != nil {
 				return nil, nil, nil, nil, err
 			}
-			elems = append(elems, *elem)
 		}
 	}
 	return elems, skipped, conflicts, deduped, nil

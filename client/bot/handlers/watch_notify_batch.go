@@ -35,10 +35,7 @@ func newBatchWatchNotifyProgress(ctx context.Context, botCtx *ext.Context, user 
 	if !user.WatchNotify || botCtx == nil {
 		return nil
 	}
-	inner, _ := batchtfile.NewProgressTrackerWithSkipped(0, user.ChatID, skipped, deduped).(*batchtfile.Progress)
-	if inner == nil {
-		return nil
-	}
+	inner := batchtfile.NewProgressTrackerWithSkipped(0, user.ChatID, skipped, deduped).(*batchtfile.Progress)
 	return &batchWatchNotifyProgress{botCtx: newBotContext(ctx, botCtx), chatID: user.ChatID, inner: inner}
 }
 

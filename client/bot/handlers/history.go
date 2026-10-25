@@ -29,7 +29,7 @@ func handleHistoryCmd(ctx *ext.Context, update *ext.Update) error {
 		// when it is, else default to page 1.
 		page := 1
 		if len(args) >= 4 {
-			if p, err := strconv.Atoi(args[len(args)-1]); err == nil && p >= 1 {
+			if p, ok := historyPageArg(args[len(args)-1]); ok {
 				page = p
 				query = strings.Join(args[2:len(args)-1], " ")
 			}
@@ -42,7 +42,7 @@ func handleHistoryCmd(ctx *ext.Context, update *ext.Update) error {
 	}
 	page := 1
 	if len(args) >= 2 {
-		if p, err := strconv.Atoi(args[1]); err == nil && p >= 1 {
+		if p, ok := historyPageArg(args[1]); ok {
 			page = p
 		} else {
 			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgHistoryUsage)), nil)
@@ -122,6 +122,16 @@ func showHistoryStats(ctx *ext.Context, update *ext.Update, userID int64) error 
 	sb.WriteString(i18n.T(i18nk.BotMsgHistoryStatsFooter))
 	ctx.Reply(update, ext.ReplyTextString(sb.String()), nil)
 	return dispatcher.EndGroups
+}
+
+// historyPageArg parses a page-number argument; ok is false unless it is an
+// integer >= 1.
+func historyPageArg(token string) (page int, ok bool) {
+	p, err := strconv.Atoi(token)
+	if err != nil || p < 1 {
+		return 0, false
+	}
+	return p, true
 }
 
 // historyRowName shortens a stored path to its base name for the listing.

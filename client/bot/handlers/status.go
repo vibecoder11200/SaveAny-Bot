@@ -57,10 +57,15 @@ func handleStatusCmd(ctx *ext.Context, update *ext.Update) error {
 	}
 	var roots []localRoot
 	seenRoots := make(map[string]bool)
-	if free, ok := diskFreeOf(cachePath, logger); ok {
-		roots = append(roots, localRoot{name: i18n.T(i18nk.BotMsgStatusCacheLabel), path: cachePath, free: free})
-		seenRoots[filepath.VolumeName(cachePath)] = true
+	addRoot := func(name, path string) {
+		free, ok := diskFreeOf(path, logger)
+		if !ok {
+			return
+		}
+		roots = append(roots, localRoot{name: name, path: path, free: free})
+		seenRoots[filepath.VolumeName(path)] = true
 	}
+	addRoot(i18n.T(i18nk.BotMsgStatusCacheLabel), cachePath)
 	for _, sc := range config.C().Storages {
 		local, ok := sc.(*storcfg.LocalStorageConfig)
 		if !ok {
@@ -69,10 +74,7 @@ func handleStatusCmd(ctx *ext.Context, update *ext.Update) error {
 		if seenRoots[filepath.VolumeName(local.BasePath)] && sameDiskFree(cachePath, local.BasePath) {
 			continue
 		}
-		if free, ok := diskFreeOf(local.BasePath, logger); ok {
-			roots = append(roots, localRoot{name: local.Name, path: local.BasePath, free: free})
-			seenRoots[filepath.VolumeName(local.BasePath)] = true
-		}
+		addRoot(local.Name, local.BasePath)
 	}
 
 	storageRows := ""
