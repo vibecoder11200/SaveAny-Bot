@@ -141,6 +141,7 @@ const (
 	BotMsgHistoryFooter                                   Key = "bot.msg.history.footer"
 	BotMsgHistoryHeader                                   Key = "bot.msg.history.header"
 	BotMsgHistoryNoMatches                                Key = "bot.msg.history.no_matches"
+	BotMsgHistoryPageOutOfRange                           Key = "bot.msg.history.page_out_of_range"
 	BotMsgHistoryRow                                      Key = "bot.msg.history.row"
 	BotMsgHistorySearchHeader                             Key = "bot.msg.history.search_header"
 	BotMsgHistorySourceKnown                              Key = "bot.msg.history.source_known"

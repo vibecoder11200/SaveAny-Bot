@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/celestix/gotgproto/ext"
 	"github.com/gotd/td/tg"
+	userclient "github.com/krau/SaveAny-Bot/client/user"
 	"github.com/krau/SaveAny-Bot/config"
 	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/tfile"
@@ -321,5 +324,78 @@ func TestCurrentWatchCursor(t *testing.T) {
 	cur, ok, err := database.CurrentWatchCursor(ctx, watch.ID)
 	if err != nil || !ok || cur != 4242 {
 		t.Fatalf("cursor = %d ok=%v err=%v, want 4242/true/nil", cur, ok, err)
+	}
+}
+
+// The live listener and the boot catch-up can interleave addFile calls on the
+// same (chat, user) buffer; under -race the mutex must hold, and the flush
+// must contain exactly one copy of every message ID.
+func TestWatchMediaGroupBufferInterleavedWriters(t *testing.T) {
+	const n = 50
+	files := make([]tfile.TGFileMessage, 0, n)
+	for i := 1; i <= n; i++ {
+		files = append(files, groupFileWithID(t, "", fmt.Sprintf("f%d.jpg", i), 42, 2000+i))
+	}
+	flushed := make(chan int, 1)
+	register := func(f tfile.TGFileMessage) {
+		watchMediaGroupMgr.addFile(2002, 8, f, time.Hour, func(got []tfile.TGFileMessage) {
+			flushed <- len(got)
+		})
+	}
+	var wg sync.WaitGroup
+	for g := 0; g < 2; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for _, f := range files {
+				register(f)
+			}
+		}()
+	}
+	wg.Wait()
+	watchMediaGroupMgr.FlushChat(2002)
+	select {
+	case got := <-flushed:
+		if got != n {
+			t.Fatalf("flushed %d files, want %d (one copy per message under interleave)", got, n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("FlushChat did not flush the interleaved buffer")
+	}
+}
+
+// Live intake advances the cursor on EVERY observed media event, before any
+// filter — here the user has no default storage, so nothing is ever
+// enqueued, yet the cursor must move. The same event re-fed as backfill must
+// NOT move it: backfill advances only after a durable enqueue.
+func TestWatchIntakeLiveCursorAdvancesPreFilter(t *testing.T) {
+	setupWatchDB(t)
+	ctx := context.Background()
+	user := database.User{ChatID: 1, DefaultStorage: ""}
+	if err := database.DB().Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	watch := database.WatchChat{UserID: user.ID, ChatID: 100}
+	if err := database.DB().Create(&watch).Error; err != nil {
+		t.Fatal(err)
+	}
+	botCtx := ext.NewContext(ctx, nil, nil, nil, nil, nil, false)
+	event := userclient.MediaMessageEvent{
+		Ctx:       botCtx,
+		ChatID:    100,
+		MessageID: 777,
+		File:      groupFileWithID(t, "", "intake.jpg", 0, 777),
+	}
+	processMediaEventForWatch(botCtx, event, &watch, watchIntakeOpts{live: true})
+	cur, ok, err := database.CurrentWatchCursor(ctx, watch.ID)
+	if err != nil || !ok || cur != 777 {
+		t.Fatalf("cursor = %d ok=%v err=%v, want 777/true/nil (live advances before filters)", cur, ok, err)
+	}
+	event.MessageID = 778
+	event.File = groupFileWithID(t, "", "intake2.jpg", 0, 778)
+	processMediaEventForWatch(botCtx, event, &watch, watchIntakeOpts{live: false})
+	cur, _, err = database.CurrentWatchCursor(ctx, watch.ID)
+	if err != nil || cur != 777 {
+		t.Fatalf("cursor = %d err=%v, want 777 (backfill advances only on durable enqueue)", cur, err)
 	}
 }

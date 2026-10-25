@@ -18,3 +18,18 @@ func DiskFree(path string) (uint64, error) {
 	}
 	return free, nil
 }
+
+// DiskID returns a stable identity for the volume containing path (its
+// volume root, e.g. `C:\`), so callers can tell two volumes apart even when
+// their free-space readouts coincide.
+func DiskID(path string) (string, error) {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return "", err
+	}
+	buf := make([]uint16, windows.MAX_PATH)
+	if err := windows.GetVolumePathName(p, &buf[0], uint32(len(buf))); err != nil {
+		return "", err
+	}
+	return windows.UTF16ToString(buf), nil
+}

@@ -147,11 +147,12 @@ type BatchOptions struct {
 	// UISink receives every creation-feedback edit as a closure, so an
 	// unattended caller can route them into its own notification channel.
 	UISink func(edit func())
-	// Progress overrides the batch task's progress tracker (watch album
-	// notifications). When nil: a track-message tracker is built when
-	// TrackMsgID != 0, and with TrackMsgID == 0 the task runs without any
-	// progress reporting — the executor nil-checks Progress throughout.
-	Progress batchtfile.ProgressTracker
+	// ProgressFactory builds the batch task's progress tracker AFTER the
+	// partition, so unattended callers (watch albums) receive the
+	// creation-time skipped/deduped lists for their notification. Returning
+	// nil runs the task without progress reporting. Mutually exclusive with
+	// TrackMsgID's built-in tracker.
+	ProgressFactory func(skipped, deduped []string) batchtfile.ProgressTracker
 	// Override, when non-nil, skips the rule layer entirely: every file goes
 	// to this storage/dir.
 	Override *BatchTarget
@@ -434,8 +435,8 @@ func CreateAndAddBatchTGFileTask(ctx *ext.Context, userID int64, opts BatchOptio
 	taskid := xid.New().String()
 	var taskProgress batchtfile.ProgressTracker
 	switch {
-	case opts.Progress != nil:
-		taskProgress = opts.Progress
+	case opts.ProgressFactory != nil:
+		taskProgress = opts.ProgressFactory(skipped, deduped)
 	case opts.TrackMsgID != 0:
 		taskProgress = batchtfile.NewProgressTrackerWithSkipped(opts.TrackMsgID, userID, skipped, deduped)
 	}

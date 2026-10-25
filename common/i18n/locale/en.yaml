@@ -525,10 +525,11 @@ bot:
       no_local_disks: "  - no local storage roots"
       unknown: "unknown"
     history:
-      usage: "Usage: /history [page]\n/history search <text> [page]\n/history stats"
+      usage: "Usage: /history [page]\n/history search <text> [p<page>, e.g. p2]\n/history stats"
       error_query: "Failed to query history: {{.Error}}"
       empty: "No saved files recorded yet.\nFiles appear here after they are saved successfully.\nNote: /purge resets the history of that storage."
       no_matches: "No saved files match the search"
+      page_out_of_range: "Page {{.Page}} is past the last page ({{.Pages}})"
       header: "🗂 Saved files ({{.Total}} total):\n"
       search_header: "🗂 Saved files matching \"{{.Query}}\" ({{.Total}} total):\n"
       row: "  - <code>{{.Name}}</code> [{{.Storage}}] {{.Size}} · {{.Time}} · {{.Source}}\n"

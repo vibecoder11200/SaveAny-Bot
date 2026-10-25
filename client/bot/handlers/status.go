@@ -56,22 +56,23 @@ func handleStatusCmd(ctx *ext.Context, update *ext.Update) error {
 		free uint64
 	}
 	var roots []localRoot
-	seenRoots := make(map[string]bool)
+	seenDisks := make(map[string]bool)
 	addRoot := func(name, path string) {
 		free, ok := diskFreeOf(path, logger)
 		if !ok {
 			return
 		}
+		id := diskIDOf(path, logger)
+		if seenDisks[id] {
+			return
+		}
+		seenDisks[id] = true
 		roots = append(roots, localRoot{name: name, path: path, free: free})
-		seenRoots[filepath.VolumeName(path)] = true
 	}
 	addRoot(i18n.T(i18nk.BotMsgStatusCacheLabel), cachePath)
 	for _, sc := range config.C().Storages {
 		local, ok := sc.(*storcfg.LocalStorageConfig)
 		if !ok {
-			continue
-		}
-		if seenRoots[filepath.VolumeName(local.BasePath)] && sameDiskFree(cachePath, local.BasePath) {
 			continue
 		}
 		addRoot(local.Name, local.BasePath)
@@ -143,13 +144,16 @@ func diskFreeOf(path string, logger *log.Logger) (uint64, bool) {
 	return free, true
 }
 
-// sameDiskFree reports whether two paths share a filesystem by comparing
-// their free byte counts — cheap and adequate for de-duplicating /status
-// rows on single-disk deployments.
-func sameDiskFree(a, b string) bool {
-	fa, errA := fsutil.DiskFree(a)
-	fb, errB := fsutil.DiskFree(b)
-	return errA == nil && errB == nil && fa == fb
+// diskIDOf reports a filesystem identity for path. When the platform call
+// fails it degrades to the path itself, so two unidentifiable roots never
+// collapse into one /status row.
+func diskIDOf(path string, logger *log.Logger) string {
+	id, err := fsutil.DiskID(path)
+	if err != nil {
+		logger.Debugf("DiskID(%s): %v", path, err)
+		return path
+	}
+	return id
 }
 
 func shortCommit(commit string) string {

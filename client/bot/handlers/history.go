@@ -13,9 +13,11 @@ import (
 )
 
 // handleHistoryCmd reads the caller's saved-file ledger.
-// Grammar: /history [page] | /history search <text> [page] | /history stats
-// The ledger is per-user (WHERE user_id = caller); /purge resets it per
-// storage, which the listing footer documents.
+// Grammar: /history [page] | /history search <text> [p<page>] | /history stats
+// The search page uses the explicit "p2" marker so a query ending in a
+// plain number ("report 2024") stays part of the text. The ledger is
+// per-user (WHERE user_id = caller); /purge resets it per storage, which
+// the listing footer documents.
 func handleHistoryCmd(ctx *ext.Context, update *ext.Update) error {
 	args := strings.Fields(update.EffectiveMessage.Text)
 	userID := update.GetUserChat().GetID()
@@ -24,16 +26,7 @@ func handleHistoryCmd(ctx *ext.Context, update *ext.Update) error {
 		return showHistoryStats(ctx, update, userID)
 	}
 	if len(args) >= 2 && args[1] == "search" {
-		query := strings.Join(args[2:], " ")
-		// The LAST argument may be a page number; strip it from the query
-		// when it is, else default to page 1.
-		page := 1
-		if len(args) >= 4 {
-			if p, ok := historyPageArg(args[len(args)-1]); ok {
-				page = p
-				query = strings.Join(args[2:len(args)-1], " ")
-			}
-		}
+		query, page := historySearchArgs(args[2:])
 		if query == "" {
 			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgHistoryUsage)), nil)
 			return dispatcher.EndGroups
@@ -52,6 +45,28 @@ func handleHistoryCmd(ctx *ext.Context, update *ext.Update) error {
 	return showHistoryList(ctx, update, userID, "", page)
 }
 
+// historySearchArgs splits the tail of /history search into the query text
+// and page. A trailing "p<digits>" token sets the page; any other trailing
+// token (including a bare number) is query text.
+func historySearchArgs(args []string) (query string, page int) {
+	if len(args) >= 2 {
+		if p, ok := historyPageMarker(args[len(args)-1]); ok {
+			return strings.Join(args[:len(args)-1], " "), p
+		}
+	}
+	return strings.Join(args, " "), 1
+}
+
+// historyPageMarker parses a "p<digits>" page marker (p2, p10); ok is false
+// for anything else, including "p0" and "p".
+func historyPageMarker(token string) (page int, ok bool) {
+	digits, matched := strings.CutPrefix(token, "p")
+	if !matched || digits == "" {
+		return 0, false
+	}
+	return historyPageArg(digits)
+}
+
 func showHistoryList(ctx *ext.Context, update *ext.Update, userID int64, query string, page int) error {
 	rows, total, err := database.ListSavedFiles(ctx, userID, query, page)
 	if err != nil {
@@ -59,9 +74,17 @@ func showHistoryList(ctx *ext.Context, update *ext.Update, userID int64, query s
 		return dispatcher.EndGroups
 	}
 	if len(rows) == 0 {
-		if query == "" && total == 0 {
+		pages := historyPageCount(total)
+		switch {
+		case total > 0 && page > pages:
+			// Matches exist, the page just ran past the end — say so
+			// instead of reporting "no matches".
+			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgHistoryPageOutOfRange, map[string]any{
+				"Page": page, "Pages": pages,
+			})), nil)
+		case query == "" && total == 0:
 			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgHistoryEmpty)), nil)
-		} else {
+		default:
 			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgHistoryNoMatches)), nil)
 		}
 		return dispatcher.EndGroups
@@ -87,7 +110,7 @@ func showHistoryList(ctx *ext.Context, update *ext.Update, userID int64, query s
 			"Source":  source,
 		}))
 	}
-	pages := (int(total) + database.HistoryPageSize - 1) / database.HistoryPageSize
+	pages := historyPageCount(total)
 	sb.WriteString(i18n.T(i18nk.BotMsgHistoryFooter, map[string]any{
 		"Page": page, "Pages": pages, "Size": database.HistoryPageSize,
 	}))
@@ -122,6 +145,12 @@ func showHistoryStats(ctx *ext.Context, update *ext.Update, userID int64) error 
 	sb.WriteString(i18n.T(i18nk.BotMsgHistoryStatsFooter))
 	ctx.Reply(update, ext.ReplyTextString(sb.String()), nil)
 	return dispatcher.EndGroups
+}
+
+// historyPageCount is the page count of a listing with total rows (fixed
+// page size, rounded up).
+func historyPageCount(total int64) int {
+	return (int(total) + database.HistoryPageSize - 1) / database.HistoryPageSize
 }
 
 // historyPageArg parses a page-number argument; ok is false unless it is an

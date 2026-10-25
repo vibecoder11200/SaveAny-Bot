@@ -26,6 +26,7 @@ import (
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/config"
 	"github.com/krau/SaveAny-Bot/core"
+	"github.com/krau/SaveAny-Bot/core/tasks/batchtfile"
 	coretfile "github.com/krau/SaveAny-Bot/core/tasks/tfile"
 	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/enums/fnamest"
@@ -578,7 +579,12 @@ func processWatchMediaGroup(ctx *ext.Context, botCtx *ext.Context, watch *databa
 			},
 			ForceGrouping: true,
 			Strategy:      watchConflictStrategy(user, opts.strategyPin),
-			Progress:      newBatchWatchNotifyProgress(ctx, botCtx, user, nil, nil),
+			// The factory runs after the partition: the notification then
+			// reports the album members skipped/deduped at creation, like
+			// the interactive /save batch reply does.
+			ProgressFactory: func(skipped, deduped []string) batchtfile.ProgressTracker {
+				return newBatchWatchNotifyProgress(ctx, botCtx, user, skipped, deduped)
+			},
 		})
 		if err != nil {
 			logger.Errorf("Failed to add watch album batch task: %s", err)

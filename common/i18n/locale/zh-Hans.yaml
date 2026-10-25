@@ -529,10 +529,11 @@ bot:
       no_local_disks: "  - 无本地存储根目录"
       unknown: "未知"
     history:
-      usage: "用法: /history [页码]\n/history search <关键词> [页码]\n/history stats"
+      usage: "用法: /history [页码]\n/history search <关键词> [p<页码>, 如 p2]\n/history stats"
       error_query: "查询历史失败: {{.Error}}"
       empty: "还没有已保存的文件记录.\n文件成功保存后会出现在这里.\n注意: /purge 会重置对应存储的历史."
       no_matches: "没有匹配的已保存文件"
+      page_out_of_range: "页码 {{.Page}} 超出最后一页 ({{.Pages}})"
       header: "🗂 已保存文件 (共 {{.Total}} 条):\n"
       search_header: "🗂 匹配 \"{{.Query}}\" 的已保存文件 (共 {{.Total}} 条):\n"
       row: "  - <code>{{.Name}}</code> [{{.Storage}}] {{.Size}} · {{.Time}} · {{.Source}}\n"
