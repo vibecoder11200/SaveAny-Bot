@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/krau/SaveAny-Bot/config"
 	"github.com/krau/SaveAny-Bot/database"
+	"github.com/krau/SaveAny-Bot/pkg/tfile"
 )
 
 // descending builds a getHistory-style batch: ids listed newest-first.
@@ -238,4 +240,86 @@ func setupWatchDB(t *testing.T) {
 	t.Cleanup(func() {
 		_ = database.CloseDB()
 	})
+}
+
+// The album buffer must never hold the same message twice: the live
+// listener and the catch-up backfill feed it concurrently, and a message
+// duplicated inside ONE batch task bypasses every dedup layer (the ledger
+// row only exists after the first copy uploads).
+func TestWatchMediaGroupBufferDedupsMessageIDs(t *testing.T) {
+	done := make(chan []tfile.TGFileMessage, 1)
+	file := buildGroupFile(t, "", "dup.jpg", 42)
+	watchMediaGroupMgr.addFile(1001, 7, file, 50*time.Millisecond, func(files []tfile.TGFileMessage) {
+		done <- files
+	})
+	// The same message re-fed by the overlapping catch-up path.
+	watchMediaGroupMgr.addFile(1001, 7, file, 50*time.Millisecond, func(files []tfile.TGFileMessage) {
+		t.Error("second registration must not restart or own the flush")
+	})
+	select {
+	case files := <-done:
+		if len(files) != 1 {
+			t.Fatalf("flushed %d files, want 1 (duplicate message rejected)", len(files))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("flush did not fire")
+	}
+	// A different message ID in the same chat still buffers and flushes.
+	flushed := make(chan int, 1)
+	watchMediaGroupMgr.addFile(1001, 7, groupFileWithID(t, "", "other.jpg", 42, 556), 50*time.Millisecond, func(files []tfile.TGFileMessage) {
+		flushed <- len(files)
+	})
+	watchMediaGroupMgr.FlushChat(1001)
+	select {
+	case n := <-flushed:
+		if n != 1 {
+			t.Fatalf("distinct message flushed %d files, want 1", n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("FlushChat did not flush the distinct message")
+	}
+}
+
+// groupFileWithID is buildGroupFile with an explicit message ID.
+func groupFileWithID(t *testing.T, caption, fileName string, groupID, msgID int) tfile.TGFileMessage {
+	t.Helper()
+	doc := &tg.Document{
+		ID:         1,
+		Size:       10,
+		MimeType:   "video/mp4",
+		Attributes: []tg.DocumentAttributeClass{&tg.DocumentAttributeFilename{FileName: fileName}},
+	}
+	msg := &tg.Message{Message: caption, ID: msgID}
+	msg.Flags.Set(9)
+	msg.Media = &tg.MessageMediaDocument{Document: doc}
+	msg.SetGroupedID(int64(groupID))
+	file, err := tfile.FromMediaMessage(msg.Media, nil, msg)
+	if err != nil {
+		t.Fatalf("FromMediaMessage: %v", err)
+	}
+	return file
+}
+
+// CurrentWatchCursor reads the durable cursor and distinguishes unset.
+func TestCurrentWatchCursor(t *testing.T) {
+	setupWatchDB(t)
+	ctx := context.Background()
+	user := database.User{ChatID: 1}
+	if err := database.DB().Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	watch := database.WatchChat{UserID: user.ID, ChatID: 100}
+	if err := database.DB().Create(&watch).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := database.CurrentWatchCursor(ctx, watch.ID); err != nil || ok {
+		t.Fatalf("unset cursor: ok=%v err=%v, want false/nil", ok, err)
+	}
+	if err := database.TouchWatchCursor(ctx, watch.ID, 4242); err != nil {
+		t.Fatal(err)
+	}
+	cur, ok, err := database.CurrentWatchCursor(ctx, watch.ID)
+	if err != nil || !ok || cur != 4242 {
+		t.Fatalf("cursor = %d ok=%v err=%v, want 4242/true/nil", cur, ok, err)
+	}
 }

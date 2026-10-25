@@ -629,6 +629,19 @@ func (w *watchMediaGroupHandler) addFile(chatID int64, userID uint, file tfile.T
 		w.callbacks[chatID] = make(map[uint]func([]tfile.TGFileMessage))
 	}
 
+	// The live listener and the boot catch-up feed the same buffer
+	// concurrently; a message buffered twice would appear twice inside ONE
+	// album batch task, where no dedup layer can catch it (the ledger row
+	// only exists after the first copy uploads). Same-message re-delivery
+	// (edits) also lands here harmlessly.
+	if file.Message() != nil {
+		for _, existing := range w.groups[chatID][userID] {
+			if existing.Message() != nil && existing.Message().ID == file.Message().ID {
+				return
+			}
+		}
+	}
+
 	if timer, exists := w.timers[chatID][userID]; exists {
 		timer.Stop()
 	}

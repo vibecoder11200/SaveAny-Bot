@@ -200,7 +200,12 @@ func runWatchCatchUpOne(botCtx *ext.Context, uctx *ext.Context, watch *database.
 	}
 
 	fetched := 0
+	// groupFilesFed / maxSeenID feed the post-flush cursor advance below.
+	var groupFilesFed, maxSeenID int64
 	for _, msg := range msgs {
+		if int64(msg.ID) > maxSeenID {
+			maxSeenID = int64(msg.ID)
+		}
 		media, ok := msg.GetMedia()
 		if !ok || media == nil {
 			continue
@@ -210,10 +215,20 @@ func runWatchCatchUpOne(botCtx *ext.Context, uctx *ext.Context, watch *database.
 		default:
 			continue
 		}
+		// Live × catch-up overlap guard: the live listener advances the
+		// cursor on EVERY observed event before any filter, so anything at
+		// or below the current cursor has already been (or is being)
+		// handled live — feeding it again would duplicate the save.
+		if cur, curOk, err := database.CurrentWatchCursor(uctx, watch.ID); err == nil && curOk && int64(msg.ID) <= cur {
+			continue
+		}
 		file, err := tfile.FromMediaMessage(media, uctx.Raw, msg, tfile.WithNameIfEmpty(tgutil.GenFileNameFromMessage(*msg)))
 		if err != nil {
 			logger.Warnf("Watch catch-up: failed to build file from message %d in chat %d: %v", msg.ID, watch.ChatID, err)
 			continue
+		}
+		if gid, grouped := msg.GetGroupedID(); grouped && gid != 0 {
+			groupFilesFed++
 		}
 		fetched++
 		processMediaEventForWatch(botCtx, userclient.MediaMessageEvent{
@@ -232,6 +247,19 @@ func runWatchCatchUpOne(botCtx *ext.Context, uctx *ext.Context, watch *database.
 	// must not wait for a live event that may never come, and the summary's
 	// enqueue counts must include the flushed albums.
 	watchMediaGroupMgr.FlushChat(watch.ChatID)
+
+	// Advance the cursor over messages that were evaluated and produced no
+	// durable task (filtered-out types, regex rejects, plain text) — the
+	// same observation-counts semantics the live path applies. Without
+	// this, a ≥500 block of non-matching messages re-fetches on every boot
+	// forever. Only safe when every fed album file actually enqueued:
+	// a failed album flush must stay re-fetchable, and its IDs interleave
+	// with the singles above them, so any album loss blocks the whole
+	// advance (conservative, still progress-safe: failures are transient
+	// and logged).
+	if maxSeenID > 0 && int64(counters.albumFiles) == groupFilesFed {
+		_ = database.TouchWatchCursor(uctx, watch.ID, maxSeenID)
+	}
 
 	if fetched == 0 {
 		// Silent when nothing new — no summary noise on quiet restarts.
@@ -314,7 +342,9 @@ func fetchHistoryPage(ctx context.Context, ectx *ext.Context, peer tg.InputPeerC
 // sendWatchCatchUpSummary reports one watch's backfill result to its owner
 // after the album flush. Wording says "enqueued": enqueue is the durability
 // boundary — a task that later fails terminally is surfaced by the watch
-// notification, not re-fetched.
+// notification, not re-fetched. The message goes through a per-call copy of
+// the bot context: an ext context keeps a message-ID random source that is
+// not safe for concurrent use, and this runs beside the live listener.
 func sendWatchCatchUpSummary(botCtx *ext.Context, uctx *ext.Context, watch *database.WatchChat, fetched, enqueued, albums int, capped bool) {
 	logger := log.FromContext(uctx)
 	user, err := database.GetUserByID(uctx, watch.UserID)
@@ -334,7 +364,8 @@ func sendWatchCatchUpSummary(botCtx *ext.Context, uctx *ext.Context, watch *data
 		logger.Errorf("Watch catch-up: failed to render summary: %s", err)
 		return
 	}
-	if _, err := botCtx.SendMessage(user.ChatID, &tg.MessagesSendMessageRequest{
+	sendCtx := newBotContext(uctx, botCtx)
+	if _, err := sendCtx.SendMessage(user.ChatID, &tg.MessagesSendMessageRequest{
 		Message:  text,
 		Entities: entities,
 	}); err != nil {

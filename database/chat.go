@@ -65,3 +65,15 @@ func TouchWatchCursor(ctx context.Context, watchID uint, messageID int64) error 
 		Where("id = ? AND (last_message_id IS NULL OR last_message_id < ?)", watchID, messageID).
 		Update("last_message_id", messageID).Error
 }
+
+// CurrentWatchCursor reads a watch's cursor; ok is false while it is unset.
+func CurrentWatchCursor(ctx context.Context, watchID uint) (cursor int64, ok bool, err error) {
+	var row WatchChat
+	if err := db.WithContext(ctx).Select("last_message_id").First(&row, watchID).Error; err != nil {
+		return 0, false, err
+	}
+	if row.LastMessageID == nil {
+		return 0, false, nil
+	}
+	return *row.LastMessageID, true, nil
+}

@@ -371,6 +371,14 @@ func CreateAndAddBatchTGFileTask(ctx *ext.Context, userID int64, opts BatchOptio
 
 	useRule := opts.Override == nil && user.ApplyRule && user.Rules != nil
 
+	// An unattended caller has no message to prompt on: the ASK branch
+	// would address message 0 and silently drop the files. Defensive —
+	// every current unattended caller pins a strategy, but the core must
+	// not depend on that.
+	if strategy == tcbdata.ConflictStrategyAsk && opts.TrackMsgID == 0 && opts.UISink == nil {
+		strategy = tcbdata.ConflictStrategyRename
+	}
+
 	applyRule := func(file tfile.TGFileMessage) (string, ruleutil.MatchedDirPath) {
 		if !useRule {
 			return opts.Stor.Name(), ruleutil.MatchedDirPath(opts.DirPath)
