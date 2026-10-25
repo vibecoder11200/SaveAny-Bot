@@ -47,6 +47,8 @@ bot:
       /id - 解析 @username 为对话 ID
       /purge - 清空某个存储的已保存记录
       /update - 检查更新并升级
+      /status - 显示机器人状态 (仅所有者)
+      /history - 显示已保存文件的历史
 
       使用帮助: https://sabot.unv.app/usage
     cmd:
@@ -68,6 +70,8 @@ bot:
       syncpeers: "同步对话列表(UserBot)"
       chatid: "解析 @username 为对话 ID"
       purge: "清空某个存储的去重/已保存记录（手动删除消息后使用）"
+      status: "显示机器人状态 (仅所有者)"
+      history: "显示已保存文件的历史"
       config: "修改配置"
       fnametmpl: "设置文件命名模板"
       help: "显示帮助"
@@ -506,3 +510,38 @@ bot:
       error_adding_aria2_download: "添加 Aria2 下载任务失败: {{.Error}}"
       info_aria2_download_added: "Aria2 下载任务已添加, GID: {{.GID}}"
       info_select_storage: "请选择存储位置, 选择后将添加到 Aria2 下载队列"
+    status:
+      not_permitted: "此命令仅机器人所有者可用"
+      body: |-
+        📊 <b>机器人状态</b>
+
+        版本: <code>{{.Version}}</code> ({{.Commit}}){{if .Docker}} · Docker{{end}}
+        运行时长: <code>{{.Uptime}}</code>
+        工作协程: <code>{{.Workers}}</code> · 队列: <code>{{.Queued}}</code> 排队 / <code>{{.Running}}</code> 运行中
+        监听: <code>{{.WatchCount}}</code> 个
+        缓存大小: <code>{{.CacheSize}}</code> · 续传状态: <code>{{.ResumeSize}}</code>
+        数据库: <code>{{.DBSize}}</code>
+
+        磁盘剩余:
+        {{.DiskRows}}
+      cache_label: "缓存"
+      disk_row: "  - {{.Name}} ({{.Path}}): 剩余 {{.Free}}\n"
+      no_local_disks: "  - 无本地存储根目录"
+      unknown: "未知"
+    history:
+      usage: "用法: /history [页码]\n/history search <关键词> [页码]\n/history stats"
+      error_query: "查询历史失败: {{.Error}}"
+      empty: "还没有已保存的文件记录.\n文件成功保存后会出现在这里.\n注意: /purge 会重置对应存储的历史."
+      no_matches: "没有匹配的已保存文件"
+      header: "🗂 已保存文件 (共 {{.Total}} 条):\n"
+      search_header: "🗂 匹配 \"{{.Query}}\" 的已保存文件 (共 {{.Total}} 条):\n"
+      row: "  - <code>{{.Name}}</code> [{{.Storage}}] {{.Size}} · {{.Time}} · {{.Source}}\n"
+      source_known: "来自 <code>{{.Chat}}</code>/{{.Message}}"
+      source_unknown: "来源未知"
+      footer: "\n第 {{.Page}}/{{.Pages}} 页 · 每页 {{.Size}} 条 · 历史仅记录成功保存; /purge 会按存储重置"
+      stats_header: "📈 已保存文件统计\n\n总计: <code>{{.Count}}</code> 个文件 · <code>{{.Size}}</code>\n"
+      stats_by_storage_title: "\n按存储:\n"
+      stats_storage_row: "  - {{.Storage}}: {{.Count}} 个文件 · {{.Size}}\n"
+      stats_by_day_title: "\n最近 14 天:\n"
+      stats_day_row: "  - {{.Day}}: {{.Count}} 个文件 · {{.Size}}\n"
+      stats_footer: "\n\n历史仅记录成功保存; /purge 会按存储重置."

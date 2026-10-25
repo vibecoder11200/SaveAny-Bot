@@ -405,7 +405,8 @@ func (t *Task) tryResend(ctx context.Context, logger *log.Logger, elem *TaskElem
 	rerr := sender.SendExistingMedia(ctx, sendCtx, media, elem.Path, path.Base(elem.Path))
 	if rerr == nil {
 		logger.Info("resend ok (no download/upload)")
-		if derr := database.RecordDedup(ctx, t.UserID, elem.Storage.Name(), elem.File.FileUniqueID(), "", elem.File.Size(), elem.Path); derr != nil {
+		srcChat, srcMsg := tgutil.SourceFromTGFile(elem.File)
+		if derr := database.RecordDedupWithSource(ctx, t.UserID, elem.Storage.Name(), elem.File.FileUniqueID(), "", elem.File.Size(), elem.Path, srcChat, srcMsg); derr != nil {
 			logger.Errorf("dedup record failed after resend (at-least-once duplicate risk): %v", derr)
 		}
 		t.markItemCompleted(elem.ID)
@@ -449,7 +450,8 @@ func (t *Task) skipLargeElem(ctx context.Context, logger *log.Logger, elem *Task
 // recordDedupAfterUpload indexes a genuinely uploaded file in the dedup
 // ledger; see database.RecordDedupAfterUpload for the failure semantics.
 func (t *Task) recordDedupAfterUpload(ctx context.Context, logger *log.Logger, elem *TaskElement, size int64) {
-	database.RecordDedupAfterUpload(ctx, logger, t.UserID, elem.Storage.Name(), elem.File.FileUniqueID(), elem.uploadHash, size, elem.Path)
+	srcChat, srcMsg := tgutil.SourceFromTGFile(elem.File)
+	database.RecordDedupAfterUploadWithSource(ctx, logger, t.UserID, elem.Storage.Name(), elem.File.FileUniqueID(), elem.uploadHash, size, elem.Path, srcChat, srcMsg)
 }
 
 // dedupSkipByHash checks the downloaded cache file against the ledger and,

@@ -35,6 +35,7 @@ func Run(cmd *cobra.Command, _ []string) {
 	})
 	log.SetDefault(logger)
 	ctx = log.WithContext(ctx, logger)
+	core.SetStartTime(time.Now())
 
 	selfupdate.CleanLeftovers()
 

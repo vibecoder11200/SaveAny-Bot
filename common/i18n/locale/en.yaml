@@ -47,6 +47,8 @@ bot:
       /id - Resolve a @username to its chat ID
       /purge - Clear the saved ledgers of a storage
       /update - Check and upgrade to latest version
+      /status - Show bot status (owner only)
+      /history - Show saved file history
 
       Usage guide: https://sabot.unv.app/usage
     cmd:
@@ -73,6 +75,8 @@ bot:
       syncpeers: "Sync peer chats (UserBot)"
       chatid: "Resolve a @username to its chat ID"
       purge: "Clear the dedup/saved ledgers of a storage (after deleting messages by hand)"
+      status: "Show bot status (owner only)"
+      history: "Show saved file history"
     save_help_text: |
       Usage:
 
@@ -502,3 +506,38 @@ bot:
       error_adding_aria2_download: "Failed to add Aria2 download task: {{.Error}}"
       info_aria2_download_added: "Aria2 download task added, GID: {{.GID}}"
       info_select_storage: "Please select storage, the task will be added to Aria2 download queue after selection"
+    status:
+      not_permitted: "This command is only available to the bot's owner"
+      body: |-
+        📊 <b>Bot status</b>
+
+        Version: <code>{{.Version}}</code> ({{.Commit}}){{if .Docker}} · Docker{{end}}
+        Uptime: <code>{{.Uptime}}</code>
+        Workers: <code>{{.Workers}}</code> · Queue: <code>{{.Queued}}</code> queued / <code>{{.Running}}</code> running
+        Watches: <code>{{.WatchCount}}</code>
+        Cache size: <code>{{.CacheSize}}</code> · Resume state: <code>{{.ResumeSize}}</code>
+        Database: <code>{{.DBSize}}</code>
+
+        Disk free:
+        {{.DiskRows}}
+      cache_label: "cache"
+      disk_row: "  - {{.Name}} ({{.Path}}): {{.Free}} free\n"
+      no_local_disks: "  - no local storage roots"
+      unknown: "unknown"
+    history:
+      usage: "Usage: /history [page]\n/history search <text> [page]\n/history stats"
+      error_query: "Failed to query history: {{.Error}}"
+      empty: "No saved files recorded yet.\nFiles appear here after they are saved successfully.\nNote: /purge resets the history of that storage."
+      no_matches: "No saved files match the search"
+      header: "🗂 Saved files ({{.Total}} total):\n"
+      search_header: "🗂 Saved files matching \"{{.Query}}\" ({{.Total}} total):\n"
+      row: "  - <code>{{.Name}}</code> [{{.Storage}}] {{.Size}} · {{.Time}} · {{.Source}}\n"
+      source_known: "from <code>{{.Chat}}</code>/{{.Message}}"
+      source_unknown: "source unknown"
+      footer: "\nPage {{.Page}}/{{.Pages}} · {{.Size}} per page · history tracks successful saves; /purge resets it per storage"
+      stats_header: "📈 Saved file stats\n\nTotal: <code>{{.Count}}</code> files · <code>{{.Size}}</code>\n"
+      stats_by_storage_title: "\nBy storage:\n"
+      stats_storage_row: "  - {{.Storage}}: {{.Count}} files · {{.Size}}\n"
+      stats_by_day_title: "\nLast 14 days:\n"
+      stats_day_row: "  - {{.Day}}: {{.Count}} files · {{.Size}}\n"
+      stats_footer: "\n\nHistory tracks successful saves; /purge resets it per storage."

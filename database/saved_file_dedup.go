@@ -24,7 +24,11 @@ type SavedFileDedup struct {
 	ContentHash  string `gorm:"index:idx_dedup_hash"`   // "" for resends: the bytes never touched this disk
 	Size         int64
 	StoragePath  string
-	CreatedAt    time.Time
+	// Source of the saved file for /history: 0 = unknown (legacy rows and
+	// non-Telegram sources). Populated only by the TG task paths.
+	ChatID    int64 `gorm:"index"`
+	MessageID int
+	CreatedAt time.Time
 }
 
 // dedupNoUserWarned once-guards the INFO log for user-less tasks: the HTTP
@@ -82,6 +86,12 @@ func DedupHasHash(ctx context.Context, userID int64, storageName, contentHash st
 // RecordDedup indexes a saved file in the dedup ledger. Recording the same
 // file twice is a no-op, not a duplicate row.
 func RecordDedup(ctx context.Context, userID int64, storageName, fileUniqueID, contentHash string, size int64, storagePath string) error {
+	return RecordDedupWithSource(ctx, userID, storageName, fileUniqueID, contentHash, size, storagePath, 0, 0)
+}
+
+// RecordDedupWithSource is RecordDedup with the Telegram source message
+// attached (0,0 = unknown), so /history can show where a file came from.
+func RecordDedupWithSource(ctx context.Context, userID int64, storageName, fileUniqueID, contentHash string, size int64, storagePath string, chatID int64, messageID int) error {
 	if !dedupEnabled(ctx, userID) {
 		return nil
 	}
@@ -97,6 +107,8 @@ func RecordDedup(ctx context.Context, userID int64, storageName, fileUniqueID, c
 		ContentHash:  contentHash,
 		Size:         size,
 		StoragePath:  storagePath,
+		ChatID:       chatID,
+		MessageID:    messageID,
 	}
 	if err := db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
 		log.FromContext(ctx).Warnf("Failed to record dedup entry: %v", err)
@@ -153,10 +165,16 @@ func DedupSkipByHash(ctx context.Context, logger *log.Logger, userID int64, stor
 // at-least-once semantics say the next identical save may create a duplicate.
 // User-less tasks and files with neither a file-id nor a hash are no-ops.
 func RecordDedupAfterUpload(ctx context.Context, logger *log.Logger, userID int64, storageName, fileUniqueID, contentHash string, size int64, storagePath string) {
+	RecordDedupAfterUploadWithSource(ctx, logger, userID, storageName, fileUniqueID, contentHash, size, storagePath, 0, 0)
+}
+
+// RecordDedupAfterUploadWithSource is RecordDedupAfterUpload with the
+// Telegram source message attached (0,0 = unknown).
+func RecordDedupAfterUploadWithSource(ctx context.Context, logger *log.Logger, userID int64, storageName, fileUniqueID, contentHash string, size int64, storagePath string, chatID int64, messageID int) {
 	if userID <= 0 || (fileUniqueID == "" && contentHash == "") {
 		return
 	}
-	if err := DedupRecordSaved(ctx, userID, storageName, fileUniqueID, contentHash, size, storagePath); err != nil {
+	if err := RecordDedupWithSource(ctx, userID, storageName, fileUniqueID, contentHash, size, storagePath, chatID, messageID); err != nil {
 		logger.Errorf("dedup record failed after upload (at-least-once duplicate risk): %v", err)
 	}
 }

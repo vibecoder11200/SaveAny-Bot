@@ -45,6 +45,9 @@ var CommandHandlers = []DescCommandHandler{
 	{"id", i18nk.BotMsgCmdChatid, handleIdCmd},
 	{"purge", i18nk.BotMsgCmdPurge, handlePurgeCmd},
 	{"update", i18nk.BotMsgCmdUpdate, handleUpdateCmd},
+	// Fork additions appended at the END to keep upstream's list diff-clean.
+	{"status", i18nk.BotMsgCmdStatus, handleStatusCmd},
+	{"history", i18nk.BotMsgCmdHistory, handleHistoryCmd},
 }
 
 func Register(disp dispatcher.Dispatcher, botCtx *ext.Context) {

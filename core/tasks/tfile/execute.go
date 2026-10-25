@@ -169,7 +169,8 @@ func (t *Task) Execute(ctx context.Context) error {
 		logger.Warnf("File skipped by storage (too large): %s", t.Path)
 		return nil
 	}
-	database.RecordDedupAfterUpload(ctx, logger, t.UserID, t.Storage.Name(), t.File.FileUniqueID(), t.uploadHash, fileStat.Size(), t.Path)
+	srcChat, srcMsg := tgutil.SourceFromTGFile(t.File)
+	database.RecordDedupAfterUploadWithSource(ctx, logger, t.UserID, t.Storage.Name(), t.File.FileUniqueID(), t.uploadHash, fileStat.Size(), t.Path, srcChat, srcMsg)
 	return nil
 }
 
@@ -204,7 +205,8 @@ func (t *Task) tryResend(ctx context.Context, logger *log.Logger) (handled bool,
 	rerr := sender.SendExistingMedia(ctx, sendCtx, media, t.Path, caption)
 	if rerr == nil {
 		logger.Info("resend ok (no download/upload)")
-		if derr := database.RecordDedup(ctx, t.UserID, t.Storage.Name(), t.File.FileUniqueID(), "", t.File.Size(), t.Path); derr != nil {
+		srcChat, srcMsg := tgutil.SourceFromTGFile(t.File)
+		if derr := database.RecordDedupWithSource(ctx, t.UserID, t.Storage.Name(), t.File.FileUniqueID(), "", t.File.Size(), t.Path, srcChat, srcMsg); derr != nil {
 			logger.Errorf("dedup record failed after resend (at-least-once duplicate risk): %v", derr)
 		}
 		return true, nil

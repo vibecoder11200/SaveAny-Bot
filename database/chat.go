@@ -48,6 +48,14 @@ func ListAllWatchChats(ctx context.Context) ([]*WatchChat, error) {
 	return watchChats, nil
 }
 
+// CountWatchChats reports the total number of watch rows (all users) for
+// the /status readout.
+func CountWatchChats(ctx context.Context) (int64, error) {
+	var count int64
+	err := db.WithContext(ctx).Model(&WatchChat{}).Count(&count).Error
+	return count, err
+}
+
 // TouchWatchCursor advances a watch's last-seen message ID, never lowering it:
 // the guarded WHERE makes the write a no-op when a concurrent live event or a
 // backfill already recorded a newer (or equal) ID. First-boot init and every

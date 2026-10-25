@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/krau/SaveAny-Bot/config"
@@ -16,7 +17,21 @@ import (
 var (
 	queueOnce     sync.Once
 	queueInstance *queue.TaskQueue[Executable]
+
+	// startTime anchors /status uptime reporting; set at boot for
+	// testability, defaulting to process start.
+	startTime = time.Now()
 )
+
+// StartTime returns the process boot time used for uptime reporting.
+func StartTime() time.Time {
+	return startTime
+}
+
+// SetStartTime records the boot time; called once from cmd.Run.
+func SetStartTime(t time.Time) {
+	startTime = t
+}
 
 // initQueue lazily creates the shared task queue.
 func initQueue() *queue.TaskQueue[Executable] {

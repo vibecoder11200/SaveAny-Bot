@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/gotd/td/tg"
+	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/tcbdata"
 	"github.com/krau/SaveAny-Bot/pkg/tfile"
@@ -259,7 +260,7 @@ func buildGroupFile(t *testing.T, caption, fileName string, groupID int64) tfile
 		MimeType:   "video/mp4",
 		Attributes: []tg.DocumentAttributeClass{&tg.DocumentAttributeFilename{FileName: fileName}},
 	}
-	msg := &tg.Message{Message: caption}
+	msg := &tg.Message{Message: caption, ID: 555}
 	msg.Flags.Set(9)
 	msg.Media = &tg.MessageMediaDocument{Document: doc}
 	msg.SetGroupedID(groupID)
@@ -325,4 +326,28 @@ func TestWatchConflictStrategyPin(t *testing.T) {
 	if got := watchConflictStrategy(&database.User{ConflictStrategy: tcbdata.ConflictStrategyAsk}, ""); got != tcbdata.ConflictStrategyRename {
 		t.Errorf("user ask = %q, want rename", got)
 	}
+}
+
+// historyRowName shortens stored paths to their base name.
+func TestHistoryRowName(t *testing.T) {
+	cases := map[string]string{
+		"videos/a.mp4": "a.mp4",
+		"a/b/c.bin":    "c.bin",
+		"plain.bin":    "plain.bin",
+		"":             "?",
+	}
+	for in, want := range cases {
+		if got := historyRowName(in); got != want {
+			t.Errorf("historyRowName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// SourceFromTGFile derives the ledger origin from a task file.
+func TestSourceFromTGFile(t *testing.T) {
+	chatID, msgID := tgutil.SourceFromTGFile(buildGroupFile(t, "", "x.jpg", 1))
+	if msgID == 0 {
+		t.Error("message ID must be derived from the file's message")
+	}
+	_ = chatID
 }

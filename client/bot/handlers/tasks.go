@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -100,7 +101,7 @@ func showQueuedTasks(ctx *ext.Context, update *ext.Update) {
 			status = i18n.T(i18nk.BotMsgTasksStatusCancelRequested)
 		}
 		opts = append(opts,
-			styling.Plain("\n"+i18n.T(i18nk.BotMsgTasksFieldId)),
+			styling.Plain("\n#"+strconv.Itoa(i+1)+" "+i18n.T(i18nk.BotMsgTasksFieldId)),
 			styling.Code(t.ID),
 			styling.Plain("\n"+i18n.T(i18nk.BotMsgTasksFieldTitle)),
 			styling.Code(t.Title),
