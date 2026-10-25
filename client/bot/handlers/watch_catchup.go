@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/celestix/gotgproto/ext"
@@ -240,16 +241,39 @@ func runWatchCatchUpOne(botCtx *ext.Context, uctx *ext.Context, watch *database.
 }
 
 // fetchNewestMessageID returns the newest message ID of a chat (0 when the
-// chat has no messages) — the guarded first-boot cursor init.
+// chat has no messages) — the guarded first-boot cursor init. The canonical
+// newest call anchors at the top: OffsetID 0, no AddOffset shift.
 func fetchNewestMessageID(ctx *ext.Context, peer tg.InputPeerClass) (int64, error) {
-	msgs, err := fetchHistoryPage(ctx, ctx, peer, 0, 0)
+	res, err := ctx.Raw.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
+		Peer:  peer,
+		Limit: 1,
+	})
 	if err != nil {
 		return 0, err
 	}
-	if len(msgs) == 0 {
+	logger := log.FromContext(ctx)
+	var classes []tg.MessageClass
+	switch m := res.(type) {
+	case *tg.MessagesMessages:
+		classes = m.Messages
+	case *tg.MessagesMessagesSlice:
+		classes = m.Messages
+	case *tg.MessagesChannelMessages:
+		classes = m.Messages
+	case *tg.MessagesMessagesNotModified:
+		logger.Debug("Watch catch-up: newest fetch returned NotModified")
+		return 0, nil
+	default:
+		logger.Debugf("Watch catch-up: newest fetch returned %T", res)
 		return 0, nil
 	}
-	return int64(msgs[0].ID), nil
+	for _, class := range classes {
+		if msg, ok := class.(*tg.Message); ok && msg != nil {
+			return int64(msg.ID), nil
+		}
+	}
+	logger.Debugf("Watch catch-up: newest fetch returned %d classes, no *tg.Message", len(classes))
+	return 0, nil
 }
 
 // fetchHistoryPage fetches one page of history newer than minID: OffsetID
@@ -283,6 +307,7 @@ func fetchHistoryPage(ctx context.Context, ectx *ext.Context, peer tg.InputPeerC
 			msgs = append(msgs, msg)
 		}
 	}
+	log.FromContext(ctx).Debug("Watch catch-up: history page", "offset_id", offsetID, "response", fmt.Sprintf("%T", res), "count", len(msgs))
 	return msgs, nil
 }
 
