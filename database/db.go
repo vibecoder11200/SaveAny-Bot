@@ -52,6 +52,9 @@ func Init(ctx context.Context) {
 	if err := db.AutoMigrate(&User{}, &Dir{}, &Rule{}, &WatchChat{}, &PendingTask{}, &TelegramSavedFile{}, &SavedFileDedup{}); err != nil {
 		logger.Fatal("Database migration failed; if upgrading from an old version, try deleting the database file and retrying", "error", err)
 	}
+	if err := EnsureWatchChatUniqueIndex(ctx); err != nil {
+		logger.Fatal("Failed to ensure the watch unique index: ", err)
+	}
 	if err := syncUsers(ctx); err != nil {
 		logger.Fatal("Failed to sync users:", err)
 	}

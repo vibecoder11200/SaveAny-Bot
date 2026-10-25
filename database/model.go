@@ -37,6 +37,10 @@ type User struct {
 
 type WatchChat struct {
 	gorm.Model
+	// (UserID, ChatID) is unique among live rows, enforced by the partial
+	// index idx_watch_chats_user_chat_active (EnsureWatchChatUniqueIndex) —
+	// a GORM tag cannot express its WHERE deleted_at IS NULL predicate, and
+	// a full unique index would collide with soft-deleted rows.
 	UserID    uint // User's database ID (not chat ID)
 	ChatID    int64
 	Filter    string
