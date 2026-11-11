@@ -30,6 +30,7 @@ type Task struct {
 	stream          bool
 	localPath       string
 	execErr         error
+	skippedLarge    bool // the storage policy-skipped this file; nothing was uploaded
 	metadataJSON    string
 	metadataVersion int
 }

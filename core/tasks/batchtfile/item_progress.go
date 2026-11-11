@@ -26,6 +26,9 @@ const (
 	ItemPhaseCompleted
 	ItemPhaseFailed
 	ItemPhaseStopped
+	// ItemPhaseSkipped marks an element a storage dropped by policy (too
+	// large with SkipLarge): intentionally not uploaded, reported, not failed.
+	ItemPhaseSkipped
 )
 
 // FailureStage identifies the operation that failed for one batch item.
@@ -245,6 +248,18 @@ func (t *Task) markItemRetry(id string, stage FailureStage, attempt, limit int, 
 		item.retryAttempt = attempt
 		item.retryLimit = limit
 		item.err = compactError(err)
+	})
+}
+
+// markItemSkipped records an intentional policy skip: the storage refused
+// the file (SkipLarge), nothing was uploaded, and the item must surface as
+// skipped — visible, but not a failure.
+func (t *Task) markItemSkipped(id string) {
+	t.updateItem(id, func(item *itemProgressState) {
+		if item.phase == ItemPhaseFailed || item.phase == ItemPhaseCompleted {
+			return
+		}
+		item.phase = ItemPhaseSkipped
 	})
 }
 

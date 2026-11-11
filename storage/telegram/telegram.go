@@ -21,6 +21,7 @@ import (
 	"github.com/gotd/td/telegram/message/styling"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
+	"github.com/gotd/td/tgerr"
 	"github.com/krau/SaveAny-Bot/client/worker"
 	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
 	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
@@ -28,6 +29,7 @@ import (
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/config"
 	storconfig "github.com/krau/SaveAny-Bot/config/storage"
+	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/consts/tglimit"
 	"github.com/krau/SaveAny-Bot/pkg/enums/ctxkey"
 	storenum "github.com/krau/SaveAny-Bot/pkg/enums/storage"
@@ -90,11 +92,44 @@ func (t *Telegram) Name() string {
 	return t.config.Name
 }
 
-// Exists always reports false: Telegram offers no reliable way to query
-// whether a file already exists in a chat, so conflict policies do not apply
-// to this backend.
+// Exists consults the ledger of files this bot has saved through this
+// storage: Telegram offers no way to ask whether a file already exists in a
+// chat, so this bookkeeping is the only conflict signal for the backend.
+// Files saved before the ledger existed, or placed into the chat by hand,
+// are invisible to it. Fail-open: an error reports not-exists — a false
+// negative may re-upload a duplicate, but never blocks a legitimate save.
 func (t *Telegram) Exists(ctx context.Context, storagePath string) (bool, error) {
+	if id := t.dbID(); id > 0 {
+		return database.TelegramSavedExists(ctx, id, path.Clean(storagePath)), nil
+	}
 	return false, nil
+}
+
+// dbID resolves this storage's database ID for ledger bookkeeping. 0 means
+// unresolved: ledger rows scoped to storage 0 would poison future checks,
+// so recording is skipped entirely in that case.
+func (t *Telegram) dbID() uint {
+	if cfg := config.C().GetStorageByName(t.config.Name); cfg != nil {
+		return cfg.GetID()
+	}
+	return 0
+}
+
+// recordSaved indexes paths this storage just saved successfully. Best
+// effort: a ledger failure never fails the upload it describes.
+func (t *Telegram) recordSaved(ctx context.Context, paths ...string) {
+	if id := t.dbID(); id > 0 {
+		_ = database.RecordTelegramSaved(ctx, id, paths...)
+	}
+}
+
+// recordAfterSave passes the upload result through, indexing the path once
+// the upload actually succeeded.
+func (t *Telegram) recordAfterSave(ctx context.Context, err error, storagePath string) error {
+	if err == nil {
+		t.recordSaved(ctx, storagePath)
+	}
+	return err
 }
 
 // Test verifies that a Telegram client is available and can access the
@@ -189,9 +224,11 @@ func (t *Telegram) saveWithContext(ctx context.Context, tctx *ext.Context, r io.
 	captionOverride := t.captionOverride(ctx)
 	size := contentLength(ctx)
 	maxUploadSize := maxUploadFileSize(tctx)
-	if t.config.SkipLarge && size > maxUploadSize {
+	if t.skipsByPolicy(tctx, size) {
 		log.FromContext(ctx).Warnf("Skipping file larger than Telegram limit (%d bytes): %d bytes", maxUploadSize, size)
-		return nil
+		// Sentinel, not nil: callers must know nothing was uploaded, so no
+		// ledger or dedup record is written for this file.
+		return storagetypes.ErrSkippedLarge
 	}
 	splitSize := t.splitSize(maxUploadSize)
 	if size > splitSize {
@@ -244,7 +281,7 @@ func (t *Telegram) saveWithContext(ctx context.Context, tctx *ext.Context, r io.
 						for _, part := range parts {
 							log.FromContext(ctx).Infof("Prepared lossless video part %s (%d bytes)", part.Name, part.Size)
 						}
-						return t.uploadLosslessVideoParts(ctx, tctx, storagePath, parts, captionOverride, progress)
+						return t.recordAfterSave(ctx, t.uploadLosslessVideoParts(ctx, tctx, storagePath, parts, captionOverride, progress), storagePath)
 					}
 					if _, seekErr := rs.Seek(0, io.SeekStart); seekErr != nil {
 						return fmt.Errorf("failed to seek large video before ZIP fallback: %w", seekErr)
@@ -252,7 +289,7 @@ func (t *Telegram) saveWithContext(ctx context.Context, tctx *ext.Context, r io.
 				}
 			}
 		}
-		return t.splitUpload(ctx, tctx, r, filename, upler, peer, size, splitSize, progress)
+		return t.recordAfterSave(ctx, t.splitUpload(ctx, tctx, r, filename, upler, peer, size, splitSize, progress), storagePath)
 	}
 
 	if err := t.limiter.Wait(ctx); err != nil {
@@ -262,11 +299,21 @@ func (t *Telegram) saveWithContext(ctx context.Context, tctx *ext.Context, r io.
 	if err != nil {
 		return err
 	}
-	_, err = tctx.Sender.
+	_, err = t.sendBuilder(tctx.Sender.
 		WithUploader(prepared.uploader).
-		To(prepared.peer).
+		To(prepared.peer)).
 		Media(ctx, prepared.media)
-	return err
+	return t.recordAfterSave(ctx, err, storagePath)
+}
+
+// sendBuilder narrows a located request builder to the sender every send in
+// this storage goes through, so a configured forum topic applies uniformly.
+// A topic is addressed by replying to its root message.
+func (t *Telegram) sendBuilder(rb *message.RequestBuilder) *message.Builder {
+	if t.config.TopicID == 0 {
+		return rb.CloneBuilder()
+	}
+	return rb.CloneBuilder().Reply(t.config.TopicID)
 }
 
 // uploadContext picks a helper that can resolve the target path with the same
@@ -366,6 +413,14 @@ func maxUploadFileSize(tctx *ext.Context) int64 {
 	return MaxUploadFileSize
 }
 
+// skipsByPolicy reports whether SkipLarge is on and size exceeds the
+// account's upload limit: the storage drops the file instead of saving it.
+// Only the account limit qualifies — a file between splitSize and the
+// account limit still saves via single-path splitting.
+func (t *Telegram) skipsByPolicy(tctx *ext.Context, size int64) bool {
+	return t.config.SkipLarge && size > maxUploadFileSize(tctx)
+}
+
 func (t *Telegram) splitSize(maxUploadSize int64) int64 {
 	splitSize := t.config.SplitSizeMB * 1024 * 1024
 	if splitSize <= 0 {
@@ -433,6 +488,13 @@ func mediaCaption(filename string, override *string) []message.StyledTextOption 
 		return nil
 	}
 	return []message.StyledTextOption{styling.Plain(caption)}
+}
+
+// usableVideoMeta reports whether probed video metadata is fit for a
+// documentAttributeVideo: zero duration or dimensions make Telegram reject
+// the whole send.
+func usableVideoMeta(info *VideoMetadata) bool {
+	return info != nil && info.Duration > 0 && info.Width > 0 && info.Height > 0
 }
 
 func truncateCaption(value string) string {
@@ -513,12 +575,16 @@ func (t *Telegram) prepareMedia(
 			switch mtypeStr {
 			case "video/mp4":
 				info, err := getMP4Meta(rs)
-				if err != nil {
-					// Fallback to ffprobe if gomedia fails (e.g., malformed MP4)
+				if err != nil || !usableVideoMeta(info) {
+					// gomedia failed OR produced degenerate values (HEVC,
+					// odd boxes, zero dimensions in tkhd): ffprobe reads the
+					// actual streams and handles every container and codec.
 					rs.Seek(0, io.SeekStart)
-					info, err = getVideoMetadata(rs)
+					if probe, perr := getVideoMetadata(rs); perr == nil {
+						info, err = probe, nil
+					}
 				}
-				if err == nil {
+				if err == nil && usableVideoMeta(info) {
 					media = doc.Video().
 						Duration(time.Duration(info.Duration)*time.Second).
 						Resolution(info.Width, info.Height).
@@ -526,7 +592,7 @@ func (t *Telegram) prepareMedia(
 				}
 			default:
 				info, err := getVideoMetadata(rs)
-				if err == nil {
+				if err == nil && usableVideoMeta(info) {
 					media = doc.Video().
 						Duration(time.Duration(info.Duration)*time.Second).
 						Resolution(info.Width, info.Height).
@@ -535,7 +601,10 @@ func (t *Telegram) prepareMedia(
 			}
 		case strings.HasPrefix(mtypeStr, "audio/"):
 			media = doc.Audio().Title(filename)
-		case strings.HasPrefix(mtypeStr, "image/") && !strings.HasSuffix(mtypeStr, "webp"):
+		case mtypeStr == "image/jpeg" || mtypeStr == "image/png":
+			// Telegram's photo slot is jpeg-class: exotic stills (HEIC, AVIF,
+			// TIFF...) sent as InputMediaUploadedPhoto fail with
+			// PHOTO_EXT_INVALID — those must travel as documents.
 			media = message.UploadedPhoto(file, caption...)
 		}
 	}
@@ -631,8 +700,10 @@ func (t *Telegram) inspectBatchItem(tctx *ext.Context, item storagetypes.BatchIt
 	}
 	mtypeStr := mtype.String()
 	forceFile := t.config.ForceFile || strings.HasPrefix(mtypeStr, "image/") && item.Size >= tglimit.MaxPhotoSize
+	// Same media-kind rule as prepareMedia: only jpeg-class stills may join
+	// photo/video albums; other images travel as single documents.
 	result.albumEligible = !forceFile && (strings.HasPrefix(mtypeStr, "video/") ||
-		strings.HasPrefix(mtypeStr, "image/") && mtypeStr != "image/webp" && mtypeStr != "image/gif")
+		mtypeStr == "image/jpeg" || mtypeStr == "image/png")
 	return result, nil
 }
 
@@ -692,7 +763,7 @@ func (t *Telegram) saveMediaGroup(
 	group []batchMediaItem,
 	onProgress func(index int, uploaded, total int64),
 ) error {
-	return retry.Retry(func() error {
+	err := retry.Retry(func() error {
 		if len(group) == 1 && group[0].useSingleSave {
 			mediaItem := group[0]
 			item := mediaItem.item
@@ -734,7 +805,7 @@ func (t *Telegram) saveMediaGroup(
 			prepared = append(prepared, *media)
 		}
 
-		builder := tctx.Sender.WithUploader(prepared[0].uploader).To(prepared[0].peer)
+		builder := t.sendBuilder(tctx.Sender.WithUploader(prepared[0].uploader).To(prepared[0].peer))
 		if len(prepared) == 1 {
 			_, err := builder.Media(ctx, prepared[0].media)
 			return err
@@ -746,8 +817,101 @@ func (t *Telegram) saveMediaGroup(
 		if _, err := builder.Album(ctx, media[0], media[1:]...); err != nil {
 			return fmt.Errorf("failed to send media album: %w", err)
 		}
+		savedPaths := make([]string, 0, len(group))
+		for _, mediaItem := range group {
+			savedPaths = append(savedPaths, mediaItem.item.StoragePath)
+		}
+		t.recordSaved(ctx, savedPaths...)
 		return nil
 	}, retry.Context(ctx), retry.RetryTimes(uint(config.C().Retry)))
+	if err == nil || len(group) == 1 || !isMediaRejectedByTelegram(err) {
+		return err
+	}
+	// Telegram rejected the album as a whole (MEDIA_*): the group send is
+	// atomic, nothing was delivered, so the items can still be saved one by
+	// one — one problematic file must not doom its whole group. Losing the
+	// album grouping beats losing the files.
+	log.FromContext(ctx).Warnf("Album send rejected by Telegram (%v), falling back to %d individual message(s)", err, len(group))
+	for _, mediaItem := range group {
+		item := mediaItem.item
+		if _, serr := item.Reader.Seek(0, io.SeekStart); serr != nil {
+			return fmt.Errorf("album send rejected (%v); seek %s for single send: %w", err, item.StoragePath, serr)
+		}
+		itemCtx := context.WithValue(ctx, ctxkey.ContentLength, item.Size)
+		itemCtx = storagetypes.WithMessageMetadata(itemCtx, item.MetadataJSON)
+		if item.PreserveCaption {
+			itemCtx = storagetypes.WithSourceCaption(itemCtx, item.Caption)
+		}
+		var serr error
+		if onProgress == nil {
+			serr = t.Save(itemCtx, item.Reader, item.StoragePath)
+		} else {
+			serr = t.SaveWithProgress(itemCtx, item.Reader, item.StoragePath, func(uploaded, total int64) {
+				onProgress(mediaItem.index, uploaded, total)
+			})
+		}
+		if serr != nil {
+			return fmt.Errorf("album send rejected (%v); single send of %s failed too: %w", err, item.StoragePath, serr)
+		}
+	}
+	return nil
+}
+
+// isMediaRejectedByTelegram reports whether err is Telegram refusing the
+// media itself (not a transport/peer problem) — the cases where the album
+// request was rejected atomically and per-item sends are still worth trying.
+func isMediaRejectedByTelegram(err error) bool {
+	return tgerr.Is(err, "MEDIA_INVALID") ||
+		tgerr.Is(err, "MEDIA_EMPTY") ||
+		tgerr.Is(err, "MEDIA_FILE_INVALID")
+}
+
+// SkipLargeLimit reports the size above which this storage drops uploads
+// when SkipLarge is enabled, so callers can skip before downloading.
+func (t *Telegram) SkipLargeLimit(ctx context.Context) (int64, bool) {
+	if !t.config.SkipLarge {
+		return 0, false
+	}
+	return maxUploadFileSize(tgutil.ExtFromContext(ctx)), true
+}
+
+// SendExistingMedia re-sends media that already lives on Telegram into this
+// storage's configured chat — no download, no re-upload. The destination is
+// pinned to the configured chat id: the storage path is bookkeeping only and
+// must never steer the message into an attacker-chosen chat. The send rides
+// sendCtx, the account that fetched the source media, because access hashes
+// and file references are account-scoped.
+//
+// The media/request structures carry access hashes and file references and
+// must never be logged — only scalar fields of the outcome may be.
+func (t *Telegram) SendExistingMedia(ctx context.Context, sendCtx *ext.Context, media tg.InputMediaClass, storagePath, caption string) error {
+	storagePath = path.Clean(storagePath)
+	if sendCtx == nil {
+		return fmt.Errorf("%w: no client context to send from", storagetypes.ErrResendPreflight)
+	}
+	// The destination is pinned to the configured chat; a storage path that
+	// redirects to another chat cannot be represented by a resend, so fall
+	// back to the upload path, which honors the redirect.
+	if _, chatID := t.target(sendCtx, storagePath); chatID != t.config.ChatID {
+		return fmt.Errorf("%w: storage path targets chat %d, resend only supports the configured chat %d", storagetypes.ErrResendPreflight, chatID, t.config.ChatID)
+	}
+	peer := tryGetInputPeer(sendCtx, t.config.ChatID)
+	if peer == nil || peer.Zero() {
+		return fmt.Errorf("%w: no input peer for chat %d on the sending account", storagetypes.ErrResendPreflight, t.config.ChatID)
+	}
+	if err := t.limiter.Wait(ctx); err != nil {
+		return fmt.Errorf("rate limit failed: %w", err)
+	}
+	var captionOpts []message.StyledTextOption
+	if caption != "" {
+		captionOpts = append(captionOpts, styling.Plain(caption))
+	}
+	_, err := t.sendBuilder(sendCtx.Sender.To(peer)).Media(ctx, message.Media(media, captionOpts...))
+	if err != nil {
+		return err
+	}
+	t.recordSaved(ctx, storagePath)
+	return nil
 }
 
 func (t *Telegram) CannotStream() string {
@@ -835,9 +999,9 @@ func (t *Telegram) splitUpload(
 			Filename(filepath.Base(matched[0])).
 			ForceFile(true).
 			MIME("application/zip")
-		_, err = tctx.Sender.
+		_, err = t.sendBuilder(tctx.Sender.
 			WithUploader(upler).
-			To(peer).
+			To(peer)).
 			Media(tctx, doc)
 		return err
 	}
@@ -857,8 +1021,8 @@ func (t *Telegram) splitUpload(
 	sender := tctx.Sender
 
 	if len(multiMedia) <= tglimit.MaxAlbumItems {
-		_, err = sender.WithUploader(upler).
-			To(peer).
+		_, err = t.sendBuilder(sender.WithUploader(upler).
+			To(peer)).
 			Album(tctx, multiMedia[0], multiMedia[1:]...)
 		return err
 	}
@@ -866,8 +1030,8 @@ func (t *Telegram) splitUpload(
 	for i := 0; i < len(multiMedia); i += tglimit.MaxAlbumItems {
 		end := min(i+tglimit.MaxAlbumItems, len(multiMedia))
 		batch := multiMedia[i:end]
-		_, err = sender.WithUploader(upler).
-			To(peer).
+		_, err = t.sendBuilder(sender.WithUploader(upler).
+			To(peer)).
 			Album(tctx, batch[0], batch[1:]...)
 		if err != nil {
 			return fmt.Errorf("failed to send album batch: %w", err)

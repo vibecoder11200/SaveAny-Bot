@@ -15,11 +15,13 @@ import (
 	"github.com/krau/SaveAny-Bot/common/tdler"
 	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
 	"github.com/krau/SaveAny-Bot/common/utils/ioutil"
+	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/config"
 	"github.com/krau/SaveAny-Bot/core"
 	"github.com/krau/SaveAny-Bot/pkg/enums/ctxkey"
 	"github.com/krau/SaveAny-Bot/pkg/storagetypes"
 	"github.com/krau/SaveAny-Bot/pkg/taskevent"
+	"github.com/krau/SaveAny-Bot/pkg/tfile"
 	"github.com/krau/SaveAny-Bot/storage"
 	"golang.org/x/sync/errgroup"
 )
@@ -113,6 +115,76 @@ func (t *Task) executionGroups() []executionGroup {
 	return groups
 }
 
+// skipLargeElem reports whether the storage would drop the element for its
+// size (SkipLarge policy), marking the item skipped when so. Checking before
+// the download avoids spending bandwidth on a file the storage refuses.
+func (t *Task) skipLargeElem(ctx context.Context, logger *log.Logger, elem *TaskElement) bool {
+	size := elem.File.Size()
+	if size <= 0 {
+		return false // unknown size: let the storage decide at upload time
+	}
+	skipper, ok := elem.Storage.(storagetypes.StorageLargeFileSkipper)
+	if !ok {
+		return false
+	}
+	limit, ok := skipper.SkipLargeLimit(ctx)
+	if !ok || size <= limit {
+		return false
+	}
+	logger.Warnf("File skipped: %d bytes exceeds storage limit %d (SkipLarge)", size, limit)
+	t.markItemSkipped(elem.ID)
+	t.notifyStateChange(ctx)
+	return true
+}
+
+// tryResendElem re-sends the element's Telegram source media straight to a
+// supporting storage — no download, no upload. handled reports that the
+// element's fate was decided (completed, or terminally failed on an
+// ambiguous send); fallback-eligible failures return handled=false so the
+// caller proceeds with the classic download+upload path.
+func (t *Task) tryResendElem(ctx context.Context, logger *log.Logger, elem *TaskElement) (handled bool, err error) {
+	sender, ok := elem.Storage.(storagetypes.ExistingMediaSender)
+	if !ok {
+		return false, nil
+	}
+	msgFile, ok := elem.File.(tfile.TGFileMessage)
+	if !ok {
+		return false, nil
+	}
+	media, ok := tgutil.ResendInputMedia(msgFile)
+	if !ok {
+		return false, nil
+	}
+	sendCtx := tdler.SendCtxForFile(ctx, elem.File)
+	if sendCtx == nil {
+		return false, nil
+	}
+	// Caption parity with the upload path: source caption when present, else
+	// the destination filename.
+	caption := path.Base(elem.Path)
+	if elem.preserveCaption && elem.sourceCaption != "" {
+		caption = elem.sourceCaption
+	}
+	rerr := sender.SendExistingMedia(ctx, sendCtx, media, elem.Path, caption)
+	if rerr == nil {
+		logger.Info("resend ok (no download/upload)")
+		// Dedup recording for resends lands with the dedup layer (records
+		// the file id with an empty content hash — the bytes never touched
+		// this disk).
+		t.markItemCompleted(elem.ID)
+		t.notifyStateChange(ctx)
+		return true, nil
+	}
+	if tgutil.ResendCanFallback(rerr) {
+		logger.Infof("resend failed (fallback to download+upload): %v", rerr)
+		return false, nil
+	}
+	// Ambiguous outcome: the message may have been delivered. Failing the
+	// element and retrying later is always safe; re-uploading is not.
+	logger.Errorf("resend failed (ambiguous, element failed): %v", rerr)
+	return true, fmt.Errorf("resend failed (ambiguous): %w", rerr)
+}
+
 func (t *Task) processElements(ctx context.Context, elems []*TaskElement) error {
 	eg, gctx := errgroup.WithContext(ctx)
 	eg.SetLimit(config.C().Workers)
@@ -178,11 +250,19 @@ func (t *Task) processBatch(ctx context.Context, group executionGroup) error {
 
 	successElems := make([]*TaskElement, 0, len(group.elems))
 	for _, r := range results {
+		if errors.Is(r.err, storagetypes.ErrSkippedLarge) {
+			// Skipped by policy before the download: excluded from the batch,
+			// reported, not failed.
+			continue
+		}
 		if r.err == nil {
 			successElems = append(successElems, r.elem)
 		}
 	}
 	if len(successElems) == 0 {
+		if skipped := len(results) - len(successElems); skipped > 0 && skipped == len(results) {
+			return nil // every element was policy-skipped: nothing to upload
+		}
 		return fmt.Errorf("all elements failed to download")
 	}
 
@@ -301,6 +381,13 @@ func (t *Task) unmarkProcessing(id string) {
 func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 	logger := log.FromContext(ctx).WithPrefix(fmt.Sprintf("file[%s]", elem.File.Name()))
 	logger.Info("Starting file download")
+	// A storage that drops oversized files (SkipLarge) is checked before the
+	// download: no bandwidth is spent on a file it will refuse. Album
+	// elements report the skip through the download result; the batch
+	// assembly excludes them below.
+	if t.skipLargeElem(ctx, logger, elem) {
+		return storagetypes.ErrSkippedLarge
+	}
 	if err := tdler.DownloadToCache(ctx, elem.File, elem.localPath, func(w io.WriterAt) io.WriterAt {
 		return ioutil.NewProgressWriterAt(w, func(n int) {
 			t.recordItemDownload(elem.ID, int64(n), time.Now())
@@ -343,6 +430,18 @@ func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 
 func (t *Task) processElement(ctx context.Context, elem *TaskElement) error {
 	logger := log.FromContext(ctx).WithPrefix(fmt.Sprintf("file[%s]", elem.File.Name()))
+	// Pre-upload hooks run above the stream dispatch: with config.Stream on,
+	// anything wired only into the download/upload regions below never runs.
+	// Order mirrors the fork: file-id dedup check (added with the dedup
+	// layer) -> tryResend -> SkipLarge pre-check -> stream dispatch. Album
+	// elements (downloadElement) keep the normal upload: resending each item
+	// separately would break the source media group.
+	if handled, rerr := t.tryResendElem(ctx, logger, elem); handled {
+		return rerr
+	}
+	if t.skipLargeElem(ctx, logger, elem) {
+		return nil
+	}
 	if elem.stream {
 		pr, pw := io.Pipe()
 		defer pr.Close()
@@ -456,6 +555,7 @@ func (t *Task) processElement(ctx context.Context, elem *TaskElement) error {
 	attempt := 0
 	retryLimit := int(config.C().Retry)
 	lastFailureStage := FailureStageUpload
+	skippedLarge := false
 	savedPath := elem.Path
 	err = retry.Retry(func() error {
 		attempt++
@@ -476,6 +576,12 @@ func (t *Task) processElement(ctx context.Context, elem *TaskElement) error {
 			savedPath, err = storage.SaveWithPath(vctx, elem.Storage, ioutil.NewProgressReader(file, fileStat.Size(), onProgress), elem.Path)
 		}
 		if err != nil {
+			if errors.Is(err, storagetypes.ErrSkippedLarge) {
+				// Policy skip, not a failure: stop retrying immediately;
+				// nothing was uploaded, so no ledger or dedup record may follow.
+				skippedLarge = true
+				return nil
+			}
 			logger.Errorf("Failed to save file: %s, retrying...", err)
 			lastFailureStage = t.itemFailureStage(elem.ID)
 			t.markItemRetry(elem.ID, lastFailureStage, attempt, retryLimit, err)
@@ -484,6 +590,14 @@ func (t *Task) processElement(ctx context.Context, elem *TaskElement) error {
 		}
 		return nil
 	}, retry.Context(vctx), retry.RetryTimes(uint(config.C().Retry)))
+	if err == nil && skippedLarge {
+		// The pre-download filter missed (e.g. account limit drift) and the
+		// storage dropped the file by policy: count it as an intentional skip.
+		logger.Warnf("File skipped by storage (too large): %s", elem.Path)
+		t.markItemSkipped(elem.ID)
+		t.notifyStateChange(vctx)
+		return nil
+	}
 	if err == nil {
 		onProgress(fileStat.Size(), fileStat.Size())
 		t.markItemCompleted(elem.ID)

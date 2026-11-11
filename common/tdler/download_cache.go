@@ -66,7 +66,7 @@ func DownloadToCache(
 				logger.Warnf("Failed to close cache file: %v", err)
 			}
 		}()
-		if _, err := newDownloader(file).Parallel(ctx, wrap(localFile)); err != nil {
+		if err := DownloadParallelWithRefresh(ctx, file, ctx, wrap(localFile)); err != nil {
 			return fmt.Errorf("download failed: %w", err)
 		}
 		return nil

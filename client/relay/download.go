@@ -211,6 +211,7 @@ func (f *relayFile) Size() int64                         { return f.base.Size() 
 func (f *relayFile) Name() string                        { return f.base.Name() }
 func (f *relayFile) SetName(name string)                 { f.base.SetName(name) }
 func (f *relayFile) Message() *tg.Message                { return f.base.Message() }
+func (f *relayFile) FileUniqueID() string                { return f.base.FileUniqueID() }
 func (f *relayFile) WorkerCount() int                    { return len(f.workers) }
 
 func (f *relayFile) cleanup(ctx context.Context) {

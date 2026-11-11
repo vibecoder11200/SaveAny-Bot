@@ -274,21 +274,70 @@ func waitChunkRetry(ctx context.Context, attempt int) error {
 
 // fetchChunk downloads one partSize-aligned chunk, retrying flood waits and
 // transient transport errors like gotd's downloader does.
+// maxResumeRefreshes bounds how many times one download may refresh its
+// file reference: a long batch can outlive several reference lifetimes
+// (~2 hours each), but an endless refresh loop means the file will simply
+// never download.
+const maxResumeRefreshes = 2
+
+// chunkRefresher serializes FILE_REFERENCE_EXPIRED recovery across the
+// parallel chunk goroutines of one resumable download: exactly one refresh
+// happens at a time, and goroutines that raced a sibling's refresh reuse the
+// fresh location without spending extra budget.
+type chunkRefresher struct {
+	mu     sync.Mutex
+	file   tfile.TGFile
+	budget int
+}
+
+func newChunkRefresher(file tfile.TGFile) *chunkRefresher {
+	return &chunkRefresher{file: file, budget: maxResumeRefreshes}
+}
+
+// refresh handles FILE_REFERENCE_EXPIRED reported for stale: the first
+// goroutine to hit it refreshes the reference in place; a goroutine whose
+// request raced an already-applied refresh reuses the fresh location without
+// spending budget. ok is false when the download must fail (no source
+// message, refresh error, budget exhausted).
+func (r *chunkRefresher) refresh(ctx context.Context, stale tg.InputFileLocationClass) (tg.InputFileLocationClass, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.file.Location() != stale {
+		// A sibling goroutine refreshed while this request was in flight;
+		// reuse its result without spending budget.
+		return r.file.Location(), true, nil
+	}
+	if r.budget <= 0 {
+		return nil, false, fmt.Errorf("file reference refresh budget exhausted")
+	}
+	msgFile, ok := r.file.(tfile.TGFileMessage)
+	if !ok || msgFile.Message() == nil {
+		return nil, false, fmt.Errorf("file carries no source message to refresh")
+	}
+	r.budget--
+	log.FromContext(ctx).Warnf("File reference expired mid-resume, refreshing (attempt %d/%d)", maxResumeRefreshes-r.budget, maxResumeRefreshes)
+	if err := RefreshFileLocation(ctx, msgFile); err != nil {
+		return nil, false, err
+	}
+	return r.file.Location(), true, nil
+}
+
 func fetchChunk(
 	ctx context.Context,
 	client downloader.Client,
-	location tg.InputFileLocationClass,
+	refresher *chunkRefresher,
 	offset int64,
 	limit int,
 ) ([]byte, error) {
 	req := &tg.UploadGetFileRequest{
-		Location: location,
+		Location: nil, // set per attempt from the (refreshable) file location
 		Offset:   offset,
 		Limit:    limit,
 	}
 	retries := 0
 	retryLimit := chunkRetryLimit()
 	for {
+		req.Location = refresher.file.Location()
 		res, err := client.UploadGetFile(ctx, req)
 		if err == nil {
 			switch r := res.(type) {
@@ -302,6 +351,18 @@ func fetchChunk(
 			default:
 				return nil, fmt.Errorf("unexpected upload.getFile response %T", res)
 			}
+		}
+		if IsFileReferenceExpired(err) {
+			// Telegram rejects the whole upload.getFile when the embedded
+			// reference went stale: refresh once and let every sibling
+			// goroutine pick up the new location.
+			newLoc, ok, rerr := refresher.refresh(ctx, req.Location)
+			if rerr != nil || !ok {
+				rerr = errors.Join(err, rerr)
+				return nil, fmt.Errorf("get chunk at %d: %w", offset, rerr)
+			}
+			req.Location = newLoc
+			continue
 		}
 		if flood, ferr := tgerr.FloodWait(ctx, err); ferr != nil {
 			if flood {
@@ -382,7 +443,7 @@ func DownloadResumable(
 	}
 
 	client := rpclimit.WrapDownloader(file.Dler())
-	location := file.Location()
+	refresher := newChunkRefresher(file)
 	var writeMu sync.Mutex
 	eg, gctx := errgroup.WithContext(ctx)
 	eg.SetLimit(threads)
@@ -392,7 +453,7 @@ func DownloadResumable(
 		}
 		eg.Go(func() error {
 			offset := int64(block) * int64(bm.PartSize)
-			data, err := fetchChunk(gctx, client, location, offset, bm.PartSize)
+			data, err := fetchChunk(gctx, client, refresher, offset, bm.PartSize)
 			if err != nil {
 				return err
 			}

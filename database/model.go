@@ -22,6 +22,7 @@ type User struct {
 	FilenameStrategy     string
 	FilenameTemplate     string
 	ConflictStrategy     string
+	MediaFilter          string             // comma-separated media types to accept; empty = accept all
 	Enabled              bool               `gorm:"not null;default:true"`
 	StorageFilterIDsJSON string             `gorm:"column:storage_filter_ids;type:text"` // JSON array of storage IDs
 	StorageFilterMode    storagefilter.Mode `gorm:"size:16;not null;default:blacklist"`  // blacklist or whitelist
@@ -32,7 +33,60 @@ type WatchChat struct {
 	UserID        uint   `gorm:"uniqueIndex:idx_watch_user_chat"`
 	ChatID        int64  `gorm:"uniqueIndex:idx_watch_user_chat"`
 	MessageFilter string // filter type and expression, for example msgre:foo
+	// MediaType accepts a comma-separated list (photo, video, document,
+	// audio); empty = no media type filtering.
+	MediaType string
+	// StorageID is the per-watch destination override: 0 = inherit (rule
+	// layer decides); non-zero skips the rule layer for this watch.
+	StorageID uint
+	// DirPath is the per-watch directory override (relative to the storage
+	// root); empty = rule layer decides.
+	DirPath string
+	// LastMessageID is the catch-up cursor: the newest message ID already
+	// observed (live) or durably enqueued (backfill) for this watch.
+	// NULL/0 = never initialized.
+	LastMessageID *int64
 }
+
+// SavedFileDedup indexes saved file content per (user, storage): one row per
+// file whose Telegram file id or sha256 content hash was recorded at save
+// time. Unlike the path-based telegram_saved_files ledger, it survives
+// renames and name collisions, so a re-save of identical content can be
+// blocked before any download or upload happens.
+//
+// Hard rows without gorm.Model: dedup entries are facts about saved content,
+// not soft-deletable user records. Uniqueness is enforced by the partial
+// unique indexes created in migration 2 (gorm tags cannot express the
+// non-empty WHERE clauses that keep resends and non-TG files — both carrying
+// empty-string keys — from colliding).
+type SavedFileDedup struct {
+	ID           uint   `gorm:"primaryKey"`
+	UserID       uint   // User.ID
+	StorageID    uint   // StorageRecord.ID
+	FileUniqueID string // "" when the source is not Telegram media (or a resend: no hash either)
+	ContentHash  string // "" for resends: the bytes never touched this disk
+	Size         int64
+	StoragePath  string
+	ChatID       int64 // source chat for /history; 0 = unknown (legacy rows and non-TG sources)
+	MessageID    int64
+	CreatedAt    time.Time
+}
+
+func (SavedFileDedup) TableName() string { return "saved_file_dedups" }
+
+// TelegramSavedFile indexes one file this bot has saved through a telegram
+// storage. Telegram offers no way to ask whether a file already exists in a
+// chat, so conflict detection and skip-on-recovery for that backend ride on
+// this ledger instead. Files saved before the ledger existed, or placed into
+// the chat by hand, are invisible to it.
+type TelegramSavedFile struct {
+	ID          uint   `gorm:"primaryKey"`
+	StorageID   uint   `gorm:"uniqueIndex:idx_telegram_saved_files"` // StorageRecord.ID
+	StoragePath string `gorm:"uniqueIndex:idx_telegram_saved_files"`
+	CreatedAt   time.Time
+}
+
+func (TelegramSavedFile) TableName() string { return "telegram_saved_files" }
 
 type Dir struct {
 	gorm.Model

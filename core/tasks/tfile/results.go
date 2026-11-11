@@ -28,6 +28,9 @@ func (t *Task) ItemResults() []core.ItemResult {
 			result.Status = core.ItemStatusCancelled
 		}
 		result.Error = t.execErr.Error()
+	} else if t.skippedLarge {
+		// Visible skip, not a success: the user must know nothing arrived.
+		result.Status = core.ItemStatusSkipped
 	}
 	if messageFile, ok := t.File.(tfilepkg.TGFileMessage); ok && messageFile.Message() != nil {
 		msg := messageFile.Message()

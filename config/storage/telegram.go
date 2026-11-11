@@ -25,6 +25,9 @@ type TelegramStorageConfig struct {
 	// Use grouped_id from metadata to preserve source media groups when the live
 	// source group key is absent.
 	UseMetadataAlbum bool `toml:"use_metadata_album" mapstructure:"use_metadata_album" json:"use_metadata_album"`
+	// TopicID routes every send into the forum topic with this root message
+	// ID (a topic is addressed by replying to its root). 0 = no topic.
+	TopicID int `toml:"topic_id" mapstructure:"topic_id" json:"topic_id"`
 }
 
 func (m *TelegramStorageConfig) Validate() error {
@@ -37,6 +40,9 @@ func (m *TelegramStorageConfig) Validate() error {
 	}
 	if m.RateLimit < 0 || m.RateBurst < 0 {
 		return fmt.Errorf("rate_limit and rate_burst must be greater than 0 for telegram storage")
+	}
+	if m.TopicID < 0 {
+		return fmt.Errorf("topic_id must not be negative for telegram storage")
 	}
 	return nil
 }

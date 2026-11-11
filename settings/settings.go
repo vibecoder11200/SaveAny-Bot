@@ -781,12 +781,13 @@ func (s *Service) DeleteStorage(ctx context.Context, id uint) error {
 	if err != nil {
 		return err
 	}
-	users, dirs, rules, err := database.StorageReferences(ctx, record.ID)
+	refs, err := database.StorageReferences(ctx, record.ID)
 	if err != nil {
 		return err
 	}
-	if users+dirs+rules > 0 {
-		return fmt.Errorf("%w: %d user(s), %d dir(s), %d rule(s) reference %s", ErrStorageInUse, users, dirs, rules, record.Name)
+	if refs.Total() > 0 {
+		return fmt.Errorf("%w: %d user(s), %d dir(s), %d rule(s), %d watch(es), %d dedup row(s), %d ledger row(s) reference %s",
+			ErrStorageInUse, refs.Users, refs.Dirs, refs.Rules, refs.Watches, refs.DedupRows, refs.LedgerRows, record.Name)
 	}
 	if err := database.DeleteStorageRecord(ctx, id); err != nil {
 		return err

@@ -72,34 +72,61 @@ func MigrateMinioStorageType(ctx context.Context) error {
 	return nil
 }
 
-// StorageReferences returns how many entities still reference the storage ID.
-func StorageReferences(ctx context.Context, storageID uint) (users, dirs, rules int64, err error) {
+// StorageRefs counts the entities that still reference a storage ID, so the
+// console can refuse deletes that would silently orphan them.
+type StorageRefs struct {
+	Users      int64
+	Dirs       int64
+	Rules      int64
+	Watches    int64 // watch_chats.storage_id override
+	DedupRows  int64 // saved_file_dedups keyed by this storage
+	LedgerRows int64 // telegram_saved_files keyed by this storage
+}
+
+// Total is the number every count contributes to the in-use check.
+func (r StorageRefs) Total() int64 {
+	return r.Users + r.Dirs + r.Rules + r.Watches + r.DedupRows + r.LedgerRows
+}
+
+// StorageReferences counts every entity that still references the storage ID.
+func StorageReferences(ctx context.Context, storageID uint) (StorageRefs, error) {
+	var refs StorageRefs
+	var err error
 	var allUsers []User
 	if err = db.WithContext(ctx).Find(&allUsers).Error; err != nil {
-		return 0, 0, 0, err
+		return refs, err
 	}
 	for _, u := range allUsers {
 		if u.DefaultStorageID == storageID {
-			users++
+			refs.Users++
 			continue
 		}
 		var ids []uint
 		if u.StorageFilterIDsJSON != "" {
 			if err := json.Unmarshal([]byte(u.StorageFilterIDsJSON), &ids); err != nil {
-				return 0, 0, 0, fmt.Errorf("decode storage filter for user %d: %w", u.ChatID, err)
+				return refs, fmt.Errorf("decode storage filter for user %d: %w", u.ChatID, err)
 			}
 		}
 		if slices.Contains(ids, storageID) {
-			users++
+			refs.Users++
 		}
 	}
-	if err = db.WithContext(ctx).Model(&Dir{}).Where("storage_id = ?", storageID).Count(&dirs).Error; err != nil {
-		return
+	if err = db.WithContext(ctx).Model(&Dir{}).Where("storage_id = ?", storageID).Count(&refs.Dirs).Error; err != nil {
+		return refs, err
 	}
-	if err = db.WithContext(ctx).Model(&Rule{}).Where("storage_id = ?", storageID).Count(&rules).Error; err != nil {
-		return
+	if err = db.WithContext(ctx).Model(&Rule{}).Where("storage_id = ?", storageID).Count(&refs.Rules).Error; err != nil {
+		return refs, err
 	}
-	return users, dirs, rules, nil
+	if err = db.WithContext(ctx).Model(&WatchChat{}).Where("storage_id = ?", storageID).Count(&refs.Watches).Error; err != nil {
+		return refs, err
+	}
+	if err = db.WithContext(ctx).Model(&SavedFileDedup{}).Where("storage_id = ?", storageID).Count(&refs.DedupRows).Error; err != nil {
+		return refs, err
+	}
+	if err = db.WithContext(ctx).Model(&TelegramSavedFile{}).Where("storage_id = ?", storageID).Count(&refs.LedgerRows).Error; err != nil {
+		return refs, err
+	}
+	return refs, nil
 }
 
 func IsNotFound(err error) bool { return errors.Is(err, gorm.ErrRecordNotFound) }

@@ -42,6 +42,8 @@ func (t *Task) ItemResults() []core.ItemResult {
 				result.Error = failureSummary(state)
 			case ItemPhaseStopped:
 				result.Status = core.ItemStatusCancelled
+			case ItemPhaseSkipped:
+				result.Status = core.ItemStatusSkipped
 			default:
 				result.Status = core.ItemStatusSkipped
 			}

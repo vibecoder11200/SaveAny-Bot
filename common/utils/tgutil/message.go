@@ -364,3 +364,62 @@ func ExtractMessageEntityUrlsText(msg *tg.Message) string {
 	}
 	return sb.String()
 }
+
+// GetMessagesByIDs fetches specific messages by ID, deduplicating and
+// chunking the request. It tries the same peer interpretations as
+// GetMessagesRange, because chat IDs arrive in both Bot API and TDLib styles.
+func GetMessagesByIDs(ctx *ext.Context, chatID int64, ids []int) (map[int]*tg.Message, error) {
+	unique := make([]int, 0, len(ids))
+	seen := make(map[int]struct{}, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	sort.Ints(unique)
+
+	fetch := func(peerID int64) (map[int]*tg.Message, error) {
+		result := make(map[int]*tg.Message, len(unique))
+		for _, chunk := range slice.Chunk(unique, 100) {
+			msgs, err := ctx.GetMessages(peerID, InputMessageClassSliceFromInt(chunk))
+			if err != nil {
+				return nil, err
+			}
+			for _, msg := range msgs {
+				if msg == nil {
+					continue
+				}
+				tgm, ok := msg.(*tg.Message)
+				if !ok {
+					// MessageEmpty and friends: the source no longer exists.
+					continue
+				}
+				result[tgm.GetID()] = tgm
+			}
+		}
+		return result, nil
+	}
+
+	result, err := fetch(chatID)
+	if err == nil {
+		return result, nil
+	}
+	in := constant.TDLibPeerID(chatID)
+	plain := in.ToPlain()
+	if result, err = fetch(int64(plain)); err == nil {
+		return result, nil
+	}
+	var channel constant.TDLibPeerID
+	channel.Channel(plain)
+	if result, err = fetch(int64(channel)); err == nil {
+		return result, nil
+	}
+	var chat constant.TDLibPeerID
+	chat.Chat(plain)
+	if result, err = fetch(int64(chat)); err == nil {
+		return result, nil
+	}
+	return nil, fmt.Errorf("failed to get messages %v for chat %d: %w", unique, chatID, err)
+}
