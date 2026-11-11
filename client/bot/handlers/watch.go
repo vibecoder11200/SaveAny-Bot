@@ -16,7 +16,6 @@ import (
 	"github.com/gotd/td/telegram/message/markup"
 	"github.com/gotd/td/tg"
 	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/conflictutil"
-	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/dirutil"
 	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/mediautil"
 	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/msgelem"
 	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/ruleutil"
@@ -25,6 +24,7 @@ import (
 	"github.com/krau/SaveAny-Bot/common/i18n"
 	"github.com/krau/SaveAny-Bot/common/i18n/i18nk"
 	"github.com/krau/SaveAny-Bot/common/mediafilter"
+	reldir "github.com/krau/SaveAny-Bot/common/utils/dirutil"
 	"github.com/krau/SaveAny-Bot/common/utils/strutil"
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/config"
@@ -108,7 +108,7 @@ func handleWatchCmd(ctx *ext.Context, update *ext.Update) error {
 		// Fail-closed: reject an unknown token now instead of storing a
 		// watch that silently never matches, and reject a spec that names
 		// no type at all (it would mean "allow everything").
-		parsedFilter, err := mediautil.ParseMediaFilter(mediaType)
+		parsedFilter, err := mediafilter.ParseMediaFilter(mediaType)
 		if err != nil {
 			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidMediaTypeFilter, map[string]any{"Error": err.Error()})), nil)
 			return dispatcher.EndGroups
@@ -132,7 +132,7 @@ func handleWatchCmd(ctx *ext.Context, update *ext.Update) error {
 	}
 	dirPath := ""
 	if parsed.DirPath != "" {
-		sanitized, err := dirutil.SanitizeRelDirPath(parsed.DirPath)
+		sanitized, err := reldir.SanitizeRelDirPath(parsed.DirPath)
 		if err != nil {
 			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgWatchErrorDirPathInvalid, map[string]any{"Error": err.Error()})), nil)
 			return dispatcher.EndGroups
@@ -462,14 +462,7 @@ type watchTargetSpec struct {
 // override (storage:/dir: flags) — which replaces the rule result and the
 // defaults for the axes it sets; then the rule match; then the user's
 // defaults.
-func resolveWatchTarget(watchStorage, watchDir, ruleStorage, ruleDir, defaultStorage, defaultDir string) watchTargetSpec {
-	if watchStorage != "" || watchDir != "" {
-		stor := watchStorage
-		if stor == "" {
-			stor = defaultStorage
-		}
-		return watchTargetSpec{StorageName: stor, DirPath: watchDir}
-	}
+func resolveWatchTarget(ruleStorage, ruleDir, defaultStorage, defaultDir string) watchTargetSpec {
 	stor := ruleStorage
 	if stor == "" {
 		stor = defaultStorage
@@ -606,7 +599,7 @@ func processMediaEventForWatch(botCtx *ext.Context, event userclient.MediaMessag
 	// the instance gate already applied in the live loop / catch-up fetch.
 	message := file.Message()
 	if watch.MediaType != "" {
-		watchScope, err := mediautil.ParseMediaFilter(watch.MediaType)
+		watchScope, err := mediafilter.ParseMediaFilter(watch.MediaType)
 		if err != nil {
 			// Stored values are validated at watch creation; a parse
 			// failure here means corrupt data — match nothing rather than
@@ -704,7 +697,7 @@ func resolveWatchFlushTarget(ctx *ext.Context, botCtx *ext.Context, watch *datab
 		// depth against out-of-band database edits.
 		dirPath := ""
 		if watch.DirPath != "" {
-			sanitized, err := dirutil.SanitizeRelDirPath(watch.DirPath)
+			sanitized, err := reldir.SanitizeRelDirPath(watch.DirPath)
 			if err != nil {
 				logger.Warnf("Stored watch dir %q failed sanitization, using root: %v", watch.DirPath, err)
 			} else {
@@ -742,7 +735,7 @@ func resolveWatchFlushTarget(ctx *ext.Context, botCtx *ext.Context, watch *datab
 			}
 		}
 	}
-	spec := resolveWatchTarget("", "", ruleStorage, ruleDir, defaultStor.Name(), defaultDirPath)
+	spec := resolveWatchTarget(ruleStorage, ruleDir, defaultStor.Name(), defaultDirPath)
 	if spec.StorageName == defaultStor.Name() {
 		return defaultStor, spec.DirPath, nil
 	}

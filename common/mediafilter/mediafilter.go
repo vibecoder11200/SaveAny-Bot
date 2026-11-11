@@ -37,7 +37,7 @@ func Allows(typ mediatype.Type) bool {
 
 // TokenSet is one resolved restriction layer: the set of accepted
 // fine-grained media type tokens (the mediatype.Fine* constants). Declared
-// as the plain map type so mediautil.MediaFilter passes without conversion.
+// as a type alias so the MediaFilter defined type passes without conversion.
 type TokenSet = map[string]bool
 
 // AllowedFor applies the scope layers in precedence order: scopes are

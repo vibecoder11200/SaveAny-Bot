@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/log"
-	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/mediautil"
+	"github.com/krau/SaveAny-Bot/common/mediafilter"
 	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/enums/storagefilter"
 )
@@ -225,7 +225,7 @@ func applyUserPatch(ctx context.Context, user *database.User, patch UserPatch) m
 	if patch.MediaFilter != nil {
 		// Stored filters are parsed everywhere they are used; validate at
 		// the write so a corrupt value cannot be persisted (fail-closed).
-		if _, err := mediautil.ParseMediaFilter(*patch.MediaFilter); err != nil {
+		if _, err := mediafilter.ParseMediaFilter(*patch.MediaFilter); err != nil {
 			fields["media_filter"] = err.Error()
 		} else {
 			user.MediaFilter = strings.TrimSpace(*patch.MediaFilter)

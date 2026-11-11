@@ -12,8 +12,8 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/dirutil"
-	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/mediautil"
+	"github.com/krau/SaveAny-Bot/common/mediafilter"
+	"github.com/krau/SaveAny-Bot/common/utils/dirutil"
 	"github.com/krau/SaveAny-Bot/database"
 )
 
@@ -450,7 +450,7 @@ func ImportLegacyDB(ctx context.Context, srcPath string) error {
 				mediaType = w.MediaType
 			}
 			if mediaType != "" {
-				scope, err := mediautil.ParseMediaFilter(mediaType)
+				scope, err := mediafilter.ParseMediaFilter(mediaType)
 				if err != nil || scope == nil {
 					log.Warnf("Clearing invalid mediatype filter of chat %d (import)", w.ChatID)
 					mediaType = ""

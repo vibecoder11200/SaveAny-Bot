@@ -185,8 +185,6 @@ func TestResolveWatchTarget(t *testing.T) {
 	tests := []struct {
 		name string
 		// inputs: watch override, rule result, user defaults
-		watchStorage   string
-		watchDir       string
 		ruleStorage    string
 		ruleDir        string
 		defaultStorage string
@@ -197,29 +195,6 @@ func TestResolveWatchTarget(t *testing.T) {
 			name:           "no override, no rule: user defaults",
 			defaultStorage: "local1", defaultDir: "downloads",
 			want: watchTargetSpec{StorageName: "local1", DirPath: "downloads"},
-		},
-		{
-			name:         "override beats rule and defaults",
-			watchStorage: "local2", watchDir: "wtest",
-			ruleStorage: "local1", ruleDir: "ruledir",
-			defaultStorage: "local1", defaultDir: "downloads",
-			want: watchTargetSpec{StorageName: "local2", DirPath: "wtest"},
-		},
-		{
-			name:        "dir-only override keeps default storage, drops rule",
-			watchDir:    "wtest",
-			ruleStorage: "local1", ruleDir: "ruledir",
-			defaultStorage: "local1", defaultDir: "downloads",
-			want: watchTargetSpec{StorageName: "local1", DirPath: "wtest"},
-		},
-		{
-			// A storage-only override targets that storage's root: the user
-			// default dir is a path on a DIFFERENT storage and must not be
-			// transplanted.
-			name:           "storage-only override targets the storage root",
-			watchStorage:   "local2",
-			defaultStorage: "local1", defaultDir: "downloads",
-			want: watchTargetSpec{StorageName: "local2", DirPath: ""},
 		},
 		{
 			name:        "rule beats defaults when no override",
@@ -242,7 +217,7 @@ func TestResolveWatchTarget(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := resolveWatchTarget(tt.watchStorage, tt.watchDir, tt.ruleStorage, tt.ruleDir, tt.defaultStorage, tt.defaultDir)
+			got := resolveWatchTarget(tt.ruleStorage, tt.ruleDir, tt.defaultStorage, tt.defaultDir)
 			if got != tt.want {
 				t.Errorf("resolveWatchTarget() = %+v, want %+v", got, tt.want)
 			}

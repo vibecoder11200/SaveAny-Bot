@@ -242,13 +242,7 @@ func (t *Task) tryResend(ctx context.Context, logger *log.Logger) (handled bool,
 		// A resend records the file id with an empty content hash — the
 		// bytes never touched this disk. Recording is idempotent against the
 		// partial unique indexes.
-		if t.UserID > 0 {
-			srcChat, srcMsg := tgutil.SourceFromTGFile(t.File)
-			if derr := database.RecordDedupWithSource(ctx, t.UserID, storage.ID(t.Storage),
-				t.File.FileUniqueID(), "", t.File.Size(), t.Path, srcChat, srcMsg); derr != nil {
-				logger.Errorf("dedup record failed after resend (at-least-once duplicate risk): %v", derr)
-			}
-		}
+		tgutil.RecordResendDedup(ctx, logger, t.UserID, storage.ID(t.Storage), t.File, t.Path)
 		return true, nil
 	}
 	if tgutil.ResendCanFallback(rerr) {

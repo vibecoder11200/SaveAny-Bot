@@ -97,10 +97,10 @@ func handleBatchSave(ctx *ext.Context, update *ext.Update, args []string) error 
 	// the legacy third argument.
 	var filterStr string
 	var filter *regexp.Regexp
-	var mediaFilter mediautil.MediaFilter
-	if len(args) > 2 && mediautil.IsMediaFilterSpec(args[2]) {
+	var mediaFilter mediafilter.MediaFilter
+	if len(args) > 2 && mediafilter.IsMediaFilterSpec(args[2]) {
 		var err error
-		mediaFilter, err = mediautil.ParseMediaFilter(strings.TrimPrefix(args[2], "t:"))
+		mediaFilter, err = mediafilter.ParseMediaFilter(strings.TrimPrefix(args[2], "t:"))
 		if err != nil {
 			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidMediaTypeFilter, map[string]any{"Error": err.Error()})), nil)
 			return dispatcher.EndGroups

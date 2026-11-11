@@ -25,7 +25,7 @@ func OpenReadOnly(path string) (*gorm.DB, error) {
 		slash = "/" + slash
 	}
 	dsn := (&url.URL{Scheme: "file", Path: slash, RawQuery: url.Values{"mode": {"ro"}}.Encode()}).String()
-	return gorm.Open(openReadOnlyDialector(dsn), &gorm.Config{})
+	return gorm.Open(openDialector(dsn), &gorm.Config{})
 }
 
 // TableNames lists the user tables of an opened database.
