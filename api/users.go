@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/charmbracelet/log"
+	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/mediautil"
 	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/enums/storagefilter"
 )
@@ -179,6 +181,7 @@ func userResponse(user *database.User, namesByID map[uint]string) UserResponse {
 		FilenameTemplate:   user.FilenameTemplate,
 		ConflictStrategy:   user.ConflictStrategy,
 		WatchNotify:        user.WatchNotify,
+		MediaFilter:        user.MediaFilter,
 		StorageFilter:      UserStorageFilter{StorageIDs: ids, StorageNames: names, Mode: user.StorageFilterMode.Normalize()},
 	}
 }
@@ -218,6 +221,15 @@ func applyUserPatch(ctx context.Context, user *database.User, patch UserPatch) m
 	}
 	if patch.WatchNotify != nil {
 		user.WatchNotify = *patch.WatchNotify
+	}
+	if patch.MediaFilter != nil {
+		// Stored filters are parsed everywhere they are used; validate at
+		// the write so a corrupt value cannot be persisted (fail-closed).
+		if _, err := mediautil.ParseMediaFilter(*patch.MediaFilter); err != nil {
+			fields["media_filter"] = err.Error()
+		} else {
+			user.MediaFilter = strings.TrimSpace(*patch.MediaFilter)
+		}
 	}
 	if patch.StorageFilter != nil {
 		for _, id := range patch.StorageFilter.StorageIDs {

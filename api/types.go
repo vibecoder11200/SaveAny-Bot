@@ -189,20 +189,24 @@ type UserResponse struct {
 	FilenameTemplate   string            `json:"filename_template"`
 	ConflictStrategy   string            `json:"conflict_strategy"`
 	WatchNotify        bool              `json:"watch_notify"`
+	MediaFilter        string            `json:"media_filter,omitempty"`
 	StorageFilter      UserStorageFilter `json:"storage_filter"`
 }
 
 type UserPatch struct {
-	Enabled          *bool              `json:"enabled,omitempty"`
-	Silent           *bool              `json:"silent,omitempty"`
-	DefaultStorageID *uint              `json:"default_storage_id,omitempty"`
-	DefaultDirID     *uint              `json:"default_dir_id,omitempty"`
-	ApplyRule        *bool              `json:"apply_rule,omitempty"`
-	FilenameStrategy *string            `json:"filename_strategy,omitempty"`
-	FilenameTemplate *string            `json:"filename_template,omitempty"`
-	ConflictStrategy *string            `json:"conflict_strategy,omitempty"`
-	WatchNotify      *bool              `json:"watch_notify,omitempty"`
-	StorageFilter    *UserStorageFilter `json:"storage_filter,omitempty"`
+	Enabled          *bool   `json:"enabled,omitempty"`
+	Silent           *bool   `json:"silent,omitempty"`
+	DefaultStorageID *uint   `json:"default_storage_id,omitempty"`
+	DefaultDirID     *uint   `json:"default_dir_id,omitempty"`
+	ApplyRule        *bool   `json:"apply_rule,omitempty"`
+	FilenameStrategy *string `json:"filename_strategy,omitempty"`
+	FilenameTemplate *string `json:"filename_template,omitempty"`
+	ConflictStrategy *string `json:"conflict_strategy,omitempty"`
+	WatchNotify      *bool   `json:"watch_notify,omitempty"`
+	// MediaFilter is the per-user default media type filter ("photo,video"
+	// grammar, empty = no restriction); validated on write.
+	MediaFilter   *string            `json:"media_filter,omitempty"`
+	StorageFilter *UserStorageFilter `json:"storage_filter,omitempty"`
 }
 
 type WebhookPayload struct {

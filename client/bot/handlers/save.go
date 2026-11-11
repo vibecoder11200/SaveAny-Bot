@@ -90,10 +90,35 @@ func handleSilentSaveReplied(ctx *ext.Context, update *ext.Update) error {
 func handleBatchSave(ctx *ext.Context, update *ext.Update, args []string) error {
 	chatArg := args[0]
 	msgIdRangeArg := args[1]
+	// Grammar: /save <chat> <range> [t:types] [regex]
+	// An argument starting with "t:" is always a media type filter (even a
+	// broken one — it errors out instead of falling back to regex), the
+	// optional next argument is the caption/filename regex, exactly like
+	// the legacy third argument.
 	var filterStr string
 	var filter *regexp.Regexp
-	if len(args) > 2 {
+	var mediaFilter mediautil.MediaFilter
+	if len(args) > 2 && mediautil.IsMediaFilterSpec(args[2]) {
+		var err error
+		mediaFilter, err = mediautil.ParseMediaFilter(strings.TrimPrefix(args[2], "t:"))
+		if err != nil {
+			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidMediaTypeFilter, map[string]any{"Error": err.Error()})), nil)
+			return dispatcher.EndGroups
+		}
+		if mediaFilter == nil {
+			// A bare "t:" or "t:,," names no type: an explicit filter
+			// intent that fails closed instead of silently falling back to
+			// the user's default filter.
+			ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidMediaTypeFilter, map[string]any{"Error": "no media type given (t: is empty)"})), nil)
+			return dispatcher.EndGroups
+		}
+		if len(args) > 3 {
+			filterStr = args[3]
+		}
+	} else if len(args) > 2 {
 		filterStr = args[2]
+	}
+	if filterStr != "" {
 		var err error
 		filter, err = regexp.Compile(filterStr)
 		if err != nil {
@@ -115,6 +140,17 @@ func handleBatchSave(ctx *ext.Context, update *ext.Update, args []string) error 
 	if err != nil {
 		ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonErrorInvalidIdOrUsername, map[string]any{"Error": err.Error()})), nil)
 		return dispatcher.EndGroups
+	}
+
+	// Scope precedence: an explicit t: filter on the command replaces the
+	// user's default media filter (mediafilter.AllowedFor picks the first
+	// non-nil layer); without t: the stored default applies.
+	if mediaFilter == nil {
+		userDB, err := database.GetUserByChatID(ctx, responsibleUserID(update))
+		if err != nil {
+			return err
+		}
+		mediaFilter = mediautil.UserMediaFilter(userDB)
 	}
 
 	replied, err := ctx.Reply(update, ext.ReplyTextString(i18n.T(i18nk.BotMsgCommonInfoFetchingMessages)), nil)
@@ -142,7 +178,13 @@ func handleBatchSave(ctx *ext.Context, update *ext.Update, args []string) error 
 		if !ok {
 			continue
 		}
-		if !mediautil.IsSupported(media) || !mediafilter.Allowed(media) {
+		if !mediautil.IsSupported(media) {
+			continue
+		}
+		// Layered scope check: the instance gate first (inside
+		// AllowedFor, never bypassable), then the effective scope layer
+		// (t: override or the user default).
+		if !mediafilter.AllowedFor(media, mediaFilter) {
 			continue
 		}
 		file, err := tfile.FromMediaMessage(media, tctx.Raw, msg, tfile.WithNameIfEmpty(tgutil.GenFileNameFromMessage(*msg)))

@@ -65,9 +65,17 @@ bot:
       2. 设置默认存储后，发送 /save <频道ID/用户名> <消息ID范围> 批量保存文件。优先匹配存储规则，未命中时使用默认存储。
       示例:
       /save @acherkrau 114-514
+
+      3. 批量保存支持可选的媒体类型过滤器和可选的说明文字正则:
+      /save <频道ID/用户名> <消息ID范围> [t:类型] [正则]
+      示例:
+      /save @acherkrau 114-514 t:video,photo
+      有效类型: photo, video, animation, audio, voice, sticker, document (别名: gif, music, vid, img, doc).
+      省略 t: 时, 将应用默认媒体过滤器.
     common:
       cancel_button_text: "取消任务"
       error_invalid_regex: "无效的正则表达式: {{.Error}}"
+      error_invalid_media_type_filter: "无效的媒体类型过滤器: {{.Error}}"
       error_invalid_msg_id_range: "无效的消息ID范围: {{.Error}}"
       error_invalid_id_or_username: "无效的ID或用户名: {{.Error}}"
       error_get_messages_failed: "获取消息失败: {{.Error}}"

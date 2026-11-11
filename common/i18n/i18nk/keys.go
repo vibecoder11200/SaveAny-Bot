@@ -49,6 +49,7 @@ const (
 	BotMsgCommonErrorGetUserInfoFailed                    Key = "bot.msg.common.error_get_user_info_failed"
 	BotMsgCommonErrorGetUserWithErrFailed                 Key = "bot.msg.common.error_get_user_with_err_failed"
 	BotMsgCommonErrorInvalidIdOrUsername                  Key = "bot.msg.common.error_invalid_id_or_username"
+	BotMsgCommonErrorInvalidMediaTypeFilter               Key = "bot.msg.common.error_invalid_media_type_filter"
 	BotMsgCommonErrorInvalidMsgIdRange                    Key = "bot.msg.common.error_invalid_msg_id_range"
 	BotMsgCommonErrorInvalidRegex                         Key = "bot.msg.common.error_invalid_regex"
 	BotMsgCommonErrorNoAvailableStorage                   Key = "bot.msg.common.error_no_available_storage"

@@ -65,9 +65,17 @@ bot:
       2. After setting default storage, send /save <channel_id/username> <message_id_range> to batch save files. Rules will be applied; if no rule matches, default storage will be used.
       Example:
       /save @acherkrau 114-514
+
+      3. Batch saving supports an optional media type filter and an optional caption regex:
+      /save <channel_id/username> <message_id_range> [t:types] [regex]
+      Example:
+      /save @acherkrau 114-514 t:video,photo
+      Valid types: photo, video, animation, audio, voice, sticker, document (aliases: gif, music, vid, img, doc).
+      When t: is omitted, your default media filter applies.
     common:
       cancel_button_text: "Cancel"
       error_invalid_regex: "Invalid regex: {{.Error}}"
+      error_invalid_media_type_filter: "Invalid media type filter: {{.Error}}"
       error_invalid_msg_id_range: "Invalid message ID range: {{.Error}}"
       error_invalid_id_or_username: "Invalid ID or username: {{.Error}}"
       error_get_messages_failed: "Failed to get messages: {{.Error}}"
