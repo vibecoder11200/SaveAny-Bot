@@ -16,6 +16,7 @@ type ProgressWriterAt struct {
 	total      int64
 	info       TaskInfo
 	writer     *ioutil.ProgressWriterAt
+	kick       func() // stall-watchdog progress kick; nil when unguarded
 }
 
 func (w *ProgressWriterAt) WriteAt(p []byte, off int64) (int, error) {
@@ -27,6 +28,7 @@ func newWriterAt(
 	wrAt io.WriterAt,
 	progress ProgressTracker,
 	taskInfo TaskInfo,
+	kick func(),
 ) *ProgressWriterAt {
 	w := &ProgressWriterAt{
 		ctx:        ctx,
@@ -35,11 +37,15 @@ func newWriterAt(
 		total:      taskInfo.FileSize(),
 		info:       taskInfo,
 	}
+	w.kick = kick
 	w.writer = ioutil.NewProgressWriterAt(wrAt, w.record)
 	return w
 }
 
 func (w *ProgressWriterAt) record(n int) {
+	if w.kick != nil {
+		w.kick()
+	}
 	downloaded := w.downloaded.Add(int64(n))
 	if w.progress != nil {
 		w.progress.OnProgress(w.ctx, w.info, downloaded, w.total)
@@ -59,6 +65,7 @@ type ProgressWriter struct {
 	total      int64
 	info       TaskInfo
 	writer     *ioutil.ProgressWriter
+	kick       func() // stall-watchdog progress kick; nil when unguarded
 }
 
 func (w *ProgressWriter) Write(p []byte) (int, error) {
@@ -70,6 +77,7 @@ func newWriter(
 	wr io.Writer,
 	progress ProgressTracker,
 	taskInfo TaskInfo,
+	kick func(),
 ) *ProgressWriter {
 	w := &ProgressWriter{
 		ctx:        ctx,
@@ -78,11 +86,15 @@ func newWriter(
 		total:      taskInfo.FileSize(),
 		info:       taskInfo,
 	}
+	w.kick = kick
 	w.writer = ioutil.NewProgressWriter(wr, w.record)
 	return w
 }
 
 func (w *ProgressWriter) record(n int) {
+	if w.kick != nil {
+		w.kick()
+	}
 	downloaded := w.downloaded.Add(int64(n))
 	if w.progress != nil {
 		w.progress.OnProgress(w.ctx, w.info, downloaded, w.total)

@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/log"
 
 	"github.com/krau/SaveAny-Bot/client/relay"
+	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
 	"github.com/krau/SaveAny-Bot/pkg/tfile"
 )
 
@@ -25,6 +26,7 @@ func DownloadToCache(
 	file tfile.TGFile,
 	cachePath string,
 	wrap func(io.WriterAt) io.WriterAt,
+	meter *dlutil.FloodWaitMeter,
 ) error {
 	if cachePath == "" {
 		return fmt.Errorf("empty cache path")
@@ -66,7 +68,7 @@ func DownloadToCache(
 				logger.Warnf("Failed to close cache file: %v", err)
 			}
 		}()
-		if err := DownloadParallelWithRefresh(ctx, file, ctx, wrap(localFile)); err != nil {
+		if err := DownloadParallelWithRefresh(ctx, file, ctx, wrap(localFile), meter); err != nil {
 			return fmt.Errorf("download failed: %w", err)
 		}
 		return nil
@@ -81,6 +83,7 @@ func DownloadToCache(
 		ctx, file, wrap(partFile),
 		downloadThreads(file),
 		ResumeStatePath(partPath),
+		meter,
 	)
 	if downloadErr != nil {
 		// Keep the relay message and sidecar so a later run can reuse them.

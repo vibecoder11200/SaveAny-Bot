@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/duke-git/lancet/v2/retry"
 	"github.com/krau/SaveAny-Bot/common/tdler"
+	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
 	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
 	"github.com/krau/SaveAny-Bot/common/utils/ioutil"
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
@@ -72,15 +73,25 @@ func (t *Task) Execute(ctx context.Context) (err error) {
 	}
 
 	logger.Info("Starting file download")
+	// Guards: the watchdog cancels dlCtx when no bytes flow for the whole
+	// stall timeout, the meter cancels it when absorbed flood-wait time
+	// shows a crawl. dlCtx, not ctx: the download RPCs must observe that
+	// cancellation.
+	wdog, wctx := dlutil.NewStallWatchdog(ctx, dlutil.DownloadStallTimeout)
+	defer wdog.Close()
+	dlCtx, dlCancel := context.WithCancel(wctx)
+	defer dlCancel()
+	meter := dlutil.NewFloodWaitMeter(dlCtx, dlCancel)
+	defer meter.Close()
 	defer func() {
 		if t.Progress != nil {
 			t.Progress.OnDone(ctx, t, err)
 		}
 	}()
-	if err := tdler.DownloadToCache(ctx, t.File, t.localPath, func(w io.WriterAt) io.WriterAt {
-		return newWriterAt(ctx, w, t.Progress, t)
-	}); err != nil {
-		return fmt.Errorf("failed to download file: %w", err)
+	if err := tdler.DownloadToCache(dlCtx, t.File, t.localPath, func(w io.WriterAt) io.WriterAt {
+		return newWriterAt(dlCtx, w, t.Progress, t, wdog.Kick)
+	}, meter); err != nil {
+		return dlutil.DownloadFailure(err, wdog, meter)
 	}
 	logger.Infof("File downloaded successfully")
 	if path.Ext(t.File.Name()) == "" && path.Ext(t.Path) == "" {

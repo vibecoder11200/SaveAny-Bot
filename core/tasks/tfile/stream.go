@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/krau/SaveAny-Bot/common/tdler"
+	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
 	"github.com/krau/SaveAny-Bot/pkg/storagetypes"
 	"github.com/krau/SaveAny-Bot/storage"
 	"golang.org/x/sync/errgroup"
@@ -28,17 +29,33 @@ func executeStream(ctx context.Context, task *Task) error {
 		savedPath, err = storage.SaveWithPath(uploadCtx, task.Storage, pr, task.Path)
 		return err
 	})
-	wr := newWriter(ctx, pw, task.Progress, task)
+	// Guards: watchdog + meter derive dlCtx from the upload side's context
+	// so a guard cancellation fails the download RPCs, and the pipe error
+	// then fails the waiting upload.
+	wdog, wctx := dlutil.NewStallWatchdog(uploadCtx, dlutil.DownloadStallTimeout)
+	defer wdog.Close()
+	dlCtx, dlCancel := context.WithCancel(wctx)
+	defer dlCancel()
+	meter := dlutil.NewFloodWaitMeter(dlCtx, dlCancel)
+	defer meter.Close()
+	wr := newWriter(dlCtx, pw, task.Progress, task, wdog.Kick)
 	errg.Go(func() error {
 		defer pw.Close()
 		logger.Info("Starting file download in stream mode")
-		downloader, cleanup := tdler.NewDownloader(ctx, task.File)
+		downloader, cleanup := tdler.NewDownloaderWithMeter(ctx, task.File, meter)
 		if cleanup != nil {
 			defer cleanup(ctx)
 		}
-		_, err := downloader.Stream(uploadCtx, wr)
+		_, err := downloader.Stream(dlCtx, wr)
 		if err != nil {
-			logger.Errorf("Failed to download file: %v", err)
+			if wdog.Stalled() {
+				err = fmt.Errorf("download stalled: no data received for %s", dlutil.DownloadStallTimeout)
+			} else if meter.Crawled() {
+				err = dlutil.CrawlError(meter.Absorbed())
+			} else {
+				err = fmt.Errorf("failed to download file: %w", err)
+			}
+			logger.Errorf("%v", err)
 			pw.CloseWithError(err)
 		}
 		return err

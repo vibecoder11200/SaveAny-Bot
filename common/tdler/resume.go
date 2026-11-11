@@ -17,6 +17,7 @@ import (
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
+	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/krau/SaveAny-Bot/common/utils/rpclimit"
@@ -398,6 +399,7 @@ func DownloadResumable(
 	w io.WriterAt,
 	threads int,
 	bitmapPath string,
+	meter *dlutil.FloodWaitMeter,
 ) error {
 	if file.Size() <= 0 {
 		return fmt.Errorf("resumable download requires a known size")
@@ -442,7 +444,7 @@ func DownloadResumable(
 		return nil
 	}
 
-	client := rpclimit.WrapDownloader(file.Dler())
+	client := meteringClient(rpclimit.WrapDownloader(file.Dler()), meter)
 	refresher := newChunkRefresher(file)
 	var writeMu sync.Mutex
 	eg, gctx := errgroup.WithContext(ctx)
@@ -485,7 +487,7 @@ func DownloadResumable(
 			// CDN 托管的文件无法用裸 upload.getFile 续传, 回退到 gotd 下载器
 			// (它内部处理 CDN 重定向), 全量重下本文件。
 			log.FromContext(ctx).Warn("File served from CDN, falling back to plain downloader")
-			if _, err := newDownloader(file).Parallel(ctx, w); err != nil {
+			if _, err := newDownloader(file, meter).Parallel(ctx, w); err != nil {
 				return fmt.Errorf("plain download after CDN redirect: %w", err)
 			}
 			return nil

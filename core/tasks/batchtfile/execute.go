@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/duke-git/lancet/v2/retry"
 	"github.com/krau/SaveAny-Bot/common/tdler"
+	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
 	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
 	"github.com/krau/SaveAny-Bot/common/utils/ioutil"
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
@@ -473,6 +474,36 @@ func (t *Task) unmarkProcessing(id string) {
 	t.processingMu.Unlock()
 }
 
+// guardedDownloadToCache runs one element's plain download under the stall
+// watchdog and the flood-wait meter, kicking the watchdog on every progress
+// write and reporting the most specific failure cause (stall -> crawl ->
+// raw error).
+func (t *Task) guardedDownloadToCache(ctx context.Context, elem *TaskElement, localPath string) error {
+	wdog, wctx := dlutil.NewStallWatchdog(ctx, dlutil.DownloadStallTimeout)
+	defer wdog.Close()
+	dlCtx, dlCancel := context.WithCancel(wctx)
+	defer dlCancel()
+	meter := dlutil.NewFloodWaitMeter(dlCtx, dlCancel)
+	defer meter.Close()
+	if err := tdler.DownloadToCache(dlCtx, elem.File, localPath, func(w io.WriterAt) io.WriterAt {
+		return ioutil.NewProgressWriterAt(w, func(n int) {
+			wdog.Kick()
+			t.recordItemDownload(elem.ID, int64(n), time.Now())
+			downloaded := t.downloaded.Add(int64(n))
+			t.notifyProgress(ctx)
+			taskevent.Emit(ctx, taskevent.Event{
+				TaskID:          t.ID,
+				Phase:           taskevent.PhaseProgress,
+				TotalBytes:      t.totalSize,
+				DownloadedBytes: downloaded,
+			})
+		})
+	}, meter); err != nil {
+		return dlutil.DownloadFailure(err, wdog, meter)
+	}
+	return nil
+}
+
 func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 	logger := log.FromContext(ctx).WithPrefix(fmt.Sprintf("file[%s]", elem.File.Name()))
 	logger.Info("Starting file download")
@@ -488,22 +519,10 @@ func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 	if t.skipLargeElem(ctx, logger, elem) {
 		return storagetypes.ErrSkippedLarge
 	}
-	if err := tdler.DownloadToCache(ctx, elem.File, elem.localPath, func(w io.WriterAt) io.WriterAt {
-		return ioutil.NewProgressWriterAt(w, func(n int) {
-			t.recordItemDownload(elem.ID, int64(n), time.Now())
-			downloaded := t.downloaded.Add(int64(n))
-			t.notifyProgress(ctx)
-			taskevent.Emit(ctx, taskevent.Event{
-				TaskID:          t.ID,
-				Phase:           taskevent.PhaseProgress,
-				TotalBytes:      t.totalSize,
-				DownloadedBytes: downloaded,
-			})
-		})
-	}); err != nil {
+	if err := t.guardedDownloadToCache(ctx, elem, elem.localPath); err != nil {
 		t.markItemFailed(ctx, elem.ID, FailureStageDownload, err)
 		t.notifyStateChange(ctx)
-		return fmt.Errorf("failed to download file: %w", err)
+		return err
 	}
 	logger.Info("File downloaded successfully")
 	fileStat, err := os.Stat(elem.localPath)
@@ -563,7 +582,18 @@ func (t *Task) processElement(ctx context.Context, elem *TaskElement) error {
 			}
 			return err
 		})
+		// Guards: watchdog + meter derive dlCtx from the upload side's
+		// context; a guard cancellation fails the download RPCs and the pipe
+		// error then fails the waiting upload. Element streams get the same
+		// guard coverage as the plain path (fork coverage parity).
+		wdog, wctx := dlutil.NewStallWatchdog(uploadCtx, dlutil.DownloadStallTimeout)
+		defer wdog.Close()
+		dlCtx, dlCancel := context.WithCancel(wctx)
+		defer dlCancel()
+		meter := dlutil.NewFloodWaitMeter(dlCtx, dlCancel)
+		defer meter.Close()
 		wr := ioutil.NewProgressWriter(pw, func(n int) {
+			wdog.Kick()
 			t.recordItemDownload(elem.ID, int64(n), time.Now())
 			downloaded := t.downloaded.Add(int64(n))
 			t.notifyProgress(ctx)
@@ -577,13 +607,20 @@ func (t *Task) processElement(ctx context.Context, elem *TaskElement) error {
 		errg.Go(func() error {
 			defer pw.Close()
 			logger.Info("Starting file download in stream mode")
-			downloader, cleanup := tdler.NewDownloader(uploadCtx, elem.File)
+			downloader, cleanup := tdler.NewDownloaderWithMeter(uploadCtx, elem.File, meter)
 			if cleanup != nil {
 				defer cleanup(uploadCtx)
 			}
-			_, err := downloader.Stream(uploadCtx, wr)
+			_, err := downloader.Stream(dlCtx, wr)
 			if err != nil {
-				logger.Errorf("Failed to download file: %v", err)
+				if wdog.Stalled() {
+					err = fmt.Errorf("download stalled: no data received for %s", dlutil.DownloadStallTimeout)
+				} else if meter.Crawled() {
+					err = dlutil.CrawlError(meter.Absorbed())
+				} else {
+					err = fmt.Errorf("failed to download file: %w", err)
+				}
+				logger.Errorf("%v", err)
 				t.markItemFailed(uploadCtx, elem.ID, FailureStageDownload, err)
 				t.notifyStateChange(ctx)
 				pw.CloseWithError(err)
@@ -614,22 +651,10 @@ func (t *Task) processElement(ctx context.Context, elem *TaskElement) error {
 		return nil
 	}
 	logger.Info("Starting file download")
-	if err := tdler.DownloadToCache(ctx, elem.File, elem.localPath, func(w io.WriterAt) io.WriterAt {
-		return ioutil.NewProgressWriterAt(w, func(n int) {
-			t.recordItemDownload(elem.ID, int64(n), time.Now())
-			downloaded := t.downloaded.Add(int64(n))
-			t.notifyProgress(ctx)
-			taskevent.Emit(ctx, taskevent.Event{
-				TaskID:          t.ID,
-				Phase:           taskevent.PhaseProgress,
-				TotalBytes:      t.totalSize,
-				DownloadedBytes: downloaded,
-			})
-		})
-	}); err != nil {
+	if err := t.guardedDownloadToCache(ctx, elem, elem.localPath); err != nil {
 		t.markItemFailed(ctx, elem.ID, FailureStageDownload, err)
 		t.notifyStateChange(ctx)
-		return fmt.Errorf("failed to download file: %w", err)
+		return err
 	}
 	logger.Info("File downloaded successfully")
 	if path.Ext(elem.FileName()) == "" {

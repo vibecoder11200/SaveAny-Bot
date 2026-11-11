@@ -2,6 +2,7 @@ package tdler
 
 import (
 	"context"
+	"time"
 
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/tg"
@@ -14,13 +15,19 @@ import (
 )
 
 func NewDownloader(ctx context.Context, file tfile.TGFile) (*downloader.Builder, func(context.Context)) {
-	file, cleanup := relay.Prepare(ctx, file)
-	return newDownloader(file), cleanup
+	return NewDownloaderWithMeter(ctx, file, nil)
 }
 
-func newDownloader(file tfile.TGFile) *downloader.Builder {
+// NewDownloaderWithMeter is NewDownloader plus a flood-wait meter that
+// observes every part RPC; a nil meter behaves exactly like NewDownloader.
+func NewDownloaderWithMeter(ctx context.Context, file tfile.TGFile, meter *dlutil.FloodWaitMeter) (*downloader.Builder, func(context.Context)) {
+	file, cleanup := relay.Prepare(ctx, file)
+	return newDownloader(file, meter), cleanup
+}
+
+func newDownloader(file tfile.TGFile, meter *dlutil.FloodWaitMeter) *downloader.Builder {
 	return downloader.NewDownloader().WithPartSize(tglimit.MaxPartSize).
-		Download(eofAwareClient{Client: rpclimit.WrapDownloader(file.Dler()), size: file.Size()}, file.Location()).
+		Download(eofAwareClient{Client: rpclimit.WrapDownloader(file.Dler()), size: file.Size(), meter: meter}, file.Location()).
 		WithThreads(downloadThreads(file))
 }
 
@@ -49,12 +56,29 @@ func downloadThreads(file tfile.TGFile) int {
 // it with 400 OFFSET_INVALID and the whole download fails.
 type eofAwareClient struct {
 	downloader.Client
-	size int64
+	size  int64
+	meter *dlutil.FloodWaitMeter
 }
 
 func (c eofAwareClient) UploadGetFile(ctx context.Context, req *tg.UploadGetFileRequest) (tg.UploadFileClass, error) {
 	if c.size > 0 && req.Offset >= c.size {
 		return &tg.UploadFile{}, nil
 	}
-	return c.Client.UploadGetFile(ctx, req)
+	if c.meter == nil {
+		return c.Client.UploadGetFile(ctx, req)
+	}
+	start := time.Now()
+	file, err := c.Client.UploadGetFile(ctx, req)
+	c.meter.Observe(time.Since(start), err)
+	return file, err
+}
+
+// meteringClient counts part-RPC durations into a FloodWaitMeter for the
+// resumable chunk fetcher, which talks to the raw client instead of the
+// downloader builder. A nil meter returns the client unchanged.
+func meteringClient(client downloader.Client, meter *dlutil.FloodWaitMeter) downloader.Client {
+	if meter == nil {
+		return client
+	}
+	return eofAwareClient{Client: client, meter: meter}
 }

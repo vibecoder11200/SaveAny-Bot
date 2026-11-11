@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/gotd/td/tgerr"
 	userclient "github.com/krau/SaveAny-Bot/client/user"
+	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/pkg/tfile"
 	"github.com/krau/mygotg/ext"
@@ -72,11 +73,11 @@ func RefreshFileLocation(ctx context.Context, file tfile.TGFileMessage) error {
 // retry must rebuild the downloader because the location is captured at
 // build time. Progress bytes of aborted attempts are counted again —
 // cosmetic only.
-func DownloadParallelWithRefresh(ctx context.Context, file tfile.TGFile, dlCtx context.Context, wrAt io.WriterAt) error {
+func DownloadParallelWithRefresh(ctx context.Context, file tfile.TGFile, dlCtx context.Context, wrAt io.WriterAt, meter *dlutil.FloodWaitMeter) error {
 	const maxRefreshes = 2
 	var err error
 	for refresh := 0; ; refresh++ {
-		_, err = newDownloader(file).Parallel(dlCtx, wrAt)
+		_, err = newDownloader(file, meter).Parallel(dlCtx, wrAt)
 		if err == nil || !IsFileReferenceExpired(err) {
 			return err
 		}
