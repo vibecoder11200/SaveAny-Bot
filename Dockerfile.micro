@@ -1,0 +1,49 @@
+# micro: slim alpine image WITHOUT the web console (the empty dist embed is
+# compiled in; the API still serves, the UI route is blank) and WITHOUT
+# ffmpeg/yt-dlp — telegram auto-split of oversized videos and yt-dlp/URL
+# parsing are degraded in this image (absence is warned at config time).
+# For full tooling use the main Dockerfile.
+FROM golang:alpine AS builder
+
+ARG VERSION="dev"
+ARG GitCommit="Unknown"
+ARG BuildTime="Unknown"
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY . .
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg \
+    CGO_ENABLED=0 \
+    go build -trimpath \
+    -tags=no_jsparser,no_playwright \
+    -ldflags=" \
+    -s -w \
+    -X 'github.com/krau/SaveAny-Bot/config.Version=${VERSION}' \
+    -X 'github.com/krau/SaveAny-Bot/config.GitCommit=${GitCommit}' \
+    -X 'github.com/krau/SaveAny-Bot/config.BuildTime=${BuildTime}' \
+    -X 'github.com/krau/SaveAny-Bot/config.Docker=true' \
+    " \
+    -o saveany-bot .
+
+FROM alpine:latest
+
+RUN apk add --no-cache curl
+
+WORKDIR /app
+
+COPY --from=builder /app/saveany-bot .
+
+RUN addgroup -S saveany && adduser -S -G saveany saveany && \
+    mkdir -p /data && chown saveany:saveany /data && \
+    chmod +x /app/saveany-bot
+
+USER saveany
+
+VOLUME ["/data"]
+
+ENTRYPOINT ["/app/saveany-bot", "--data-dir", "/data"]

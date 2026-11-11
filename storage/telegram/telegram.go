@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -135,6 +136,14 @@ func (t *Telegram) recordAfterSave(ctx context.Context, err error, storagePath s
 // Test verifies that a Telegram client is available and can access the
 // configured chat.
 func (t *Telegram) Test(ctx context.Context) error {
+	// Surface missing media tools at configuration time: uploads auto-split
+	// oversized videos through ffmpeg/ffprobe, and in slim images (micro/
+	// pico) their absence otherwise surfaces as an opaque mid-task failure.
+	for _, tool := range []string{"ffmpeg", "ffprobe"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			log.FromContext(ctx).Warnf("%s not found: uploads larger than the Telegram single-file limit cannot be auto-split in this environment", tool)
+		}
+	}
 	tctx := tgutil.ExtFromContext(ctx)
 	if tctx == nil {
 		return fmt.Errorf("telegram client is not available")

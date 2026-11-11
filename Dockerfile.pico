@@ -1,0 +1,49 @@
+# pico: the minimum build — FROM scratch, static binary, no shell, no
+# healthcheck (liveness = process exit), web console NOT bundled (the empty
+# dist embed is compiled in; the API serves, the UI route is blank), and no
+# ffmpeg/yt-dlp — telegram auto-split of oversized videos and yt-dlp/URL
+# parsing are degraded here (absence is warned at config time).
+# The sqlite_glebarez driver drops the ncruces WASM machinery for the
+# smallest possible binary.
+FROM golang:alpine AS builder
+
+ARG VERSION="dev"
+ARG GitCommit="Unknown"
+ARG BuildTime="Unknown"
+
+WORKDIR /app
+
+RUN apk add --no-cache ca-certificates
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY . .
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg \
+    CGO_ENABLED=0 \
+    go build -trimpath \
+    -tags=no_jsparser,no_playwright,sqlite_glebarez \
+    -ldflags=" \
+    -s -w \
+    -X 'github.com/krau/SaveAny-Bot/config.Version=${VERSION}' \
+    -X 'github.com/krau/SaveAny-Bot/config.GitCommit=${GitCommit}' \
+    -X 'github.com/krau/SaveAny-Bot/config.BuildTime=${BuildTime}' \
+    -X 'github.com/krau/SaveAny-Bot/config.Docker=true' \
+    " \
+    -o saveany-bot . && chmod +x saveany-bot
+
+FROM scratch
+
+WORKDIR /app
+
+COPY --from=builder /app/saveany-bot .
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV SSL_CERT_DIR=/etc/ssl/certs
+
+VOLUME ["/data"]
+
+ENTRYPOINT ["/app/saveany-bot", "--data-dir", "/data"]

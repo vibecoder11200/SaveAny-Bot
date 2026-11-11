@@ -1,6 +1,8 @@
 package shortcut
 
 import (
+	"os/exec"
+
 	"github.com/charmbracelet/log"
 	"github.com/gotd/td/tg"
 	"github.com/krau/mygotg/dispatcher"
@@ -28,6 +30,12 @@ func CreateAndAddYtdlpTaskWithEdit(ctx *ext.Context, stor storage.Storage, dirPa
 		return dispatcher.EndGroups
 	}
 
+	// Surface the missing binary at task creation: in slim images (micro/
+	// pico) yt-dlp is absent and the task would otherwise die mid-run with
+	// an opaque exec error.
+	if _, err := exec.LookPath("yt-dlp"); err != nil {
+		logger.Warn("yt-dlp not found: the task will fail; install yt-dlp or use an image that bundles it")
+	}
 	logger.Infof("Creating yt-dlp task for %d URL(s) with %d flag(s)", len(urls), len(flags))
 
 	task := ytdlp.NewTask(
