@@ -19,10 +19,24 @@
 
 > [!NOTE]
 > **This is a fork** of [krau/SaveAny-Bot](https://github.com/krau/SaveAny-Bot), rebuilt on upstream v1.
-> Fork additions: watch extensions (`storage:` / `dir:` / `msgre:` / `mediatype:` filters + catch-up after
-> restart), 3-layer dedup with a re-save ledger (`/history`, `/purge`), ops commands (`/status`, `/id`,
-> task queue positions), resend by file ID, SkipLarge guard with forum topic routing, and a v0→v1
-> database importer. Detailed fork docs: _pending_.
+> Fork additions (docs under [docs/fork/](docs/fork/)):
+>
+> - **Watch extensions** — [watch.md](docs/fork/watch.md): per-watch `storage:`/`dir:`/`msgre:`/`mediatype:`
+>   overrides, per-group album filtering, true album saves on telegram storage, and boot catch-up that
+>   backfills what watched chats delivered while the instance was down (cursor-durable, exactly-once).
+> - **3-layer content dedup** — [dedup.md](docs/fork/dedup.md): file-ID, content-hash and re-save ledger
+>   layers, fail-open, per (user, storage); `/history` + `/purge` in [ops.md](docs/fork/ops.md).
+> - **Ops commands** — [ops.md](docs/fork/ops.md): `/status` (owner-gated instance health),
+>   `/id` (userbot-preferring entity resolve), queue positions in `/tasks`.
+> - **Resend by file ID** for telegram→telegram saves (no re-download/re-upload).
+> - **Download guards**: stall watchdog, FLOOD_WAIT meter, edit-flood backoff on progress messages.
+> - **v0→v1 data importer** — [migration-v0-to-v1.md](docs/fork/migration-v0-to-v1.md): one-shot
+>   `--fork-db` import of users/dirs/rules/watches(+cursors)/ledgers from a v0 install.
+>
+> Images: `Dockerfile.micro` (alpine + curl) and `Dockerfile.pico` (scratch, `sqlite_glebarez`) build
+> WITHOUT the web console bundle (API serves, UI blank) and WITHOUT ffmpeg/yt-dlp (telegram auto-split
+> and yt-dlp parsing degrade; absence is warned at config time). Migrating production from v0:
+> [migration guide](docs/fork/migration-v0-to-v1.md).
 
 ## 🎯 Features
 

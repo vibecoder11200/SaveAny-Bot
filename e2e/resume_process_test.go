@@ -18,6 +18,12 @@ import (
 )
 
 func TestGracefulRestartResumesTask(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// os.Process.Signal(os.Interrupt) is unsupported on Windows (Go
+		// exposes no Ctrl+C-for-another-process API); same platform limit
+		// the SIGTERM variant skips for.
+		t.Skip("graceful signal process test is POSIX-only")
+	}
 	restartResume(t, os.Interrupt)
 }
 
