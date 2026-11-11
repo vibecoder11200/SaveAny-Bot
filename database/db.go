@@ -14,7 +14,15 @@ import (
 
 var db *gorm.DB
 
+// dbPath records the database file path handed to Init; DBPath reports it
+// for ops readouts (/status). Empty until Init ran.
+var dbPath string
+
+// DBPath returns the on-disk path of the SQLite database.
+func DBPath() string { return dbPath }
+
 func Init(ctx context.Context, path string) {
+	dbPath = path
 	logger := log.FromContext(ctx)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		logger.Fatalf("Failed to create data directory: %v", err)

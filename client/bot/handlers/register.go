@@ -36,6 +36,8 @@ var CommandHandlers = []DescCommandHandler{
 	// Fork additions appended at the end to keep the upstream list diff-clean.
 	{"purge", i18nk.BotMsgCmdPurge, handlePurgeCmd},
 	{"history", i18nk.BotMsgCmdHistory, handleHistoryCmd},
+	{"status", i18nk.BotMsgCmdStatus, handleStatusCmd},
+	{"id", i18nk.BotMsgCmdChatid, handleIdCmd},
 }
 
 // groupGate admits private chats, basic groups, and supergroups. Broadcast

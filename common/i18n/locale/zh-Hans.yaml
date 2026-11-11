@@ -53,6 +53,8 @@ bot:
       update: "检查更新"
       purge: "清空某存储的去重/已保存记录 (手动删除消息后使用)"
       history: "查看已保存文件历史"
+      status: "显示机器人状态 (仅所有者)"
+      chatid: "解析 @username 的对话信息"
     save_help_text: |
       使用方法:
 
@@ -501,3 +503,28 @@ bot:
       stats_footer: "
 
 历史仅记录成功保存; /purge 会按存储重置."
+    status:
+      not_permitted: "此命令仅机器人所有者可用"
+      body: |-
+        📊 机器人状态
+
+        版本: {{.Version}} ({{.Commit}}){{if .Docker}} · Docker{{end}}
+        运行时长: {{.Uptime}}
+        工作协程: {{.Workers}} · 队列: {{.Queued}} 排队 / {{.Running}} 运行中
+        监听: {{.WatchCount}} 个
+        缓存大小: {{.CacheSize}} · 续传状态: {{.ResumeSize}}
+        数据库: {{.DBSize}}
+
+        磁盘剩余:
+        {{.DiskRows}}
+      cache_label: "缓存"
+      disk_row: "  - {{.Name}} ({{.Path}}): 剩余 {{.Free}}
+"
+      no_local_disks: "  - 无本地存储根目录"
+      unknown: "未知"
+    chatid:
+      usage: "用法: /id @username"
+      info: "名称: {{.Title}}
+类型: {{.Type}}
+ID: {{.ID}}"
+      error_resolve_failed: "解析用户名失败: {{.Error}}"

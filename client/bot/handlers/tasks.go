@@ -86,6 +86,8 @@ type taskListItem struct {
 	ID      string
 	Title   string
 	Created time.Time
+	// Position is the 1-based queue slot; 0 = not shown (running list).
+	Position int
 }
 
 func taskItems(tasks []queue.TaskInfo) []taskListItem {
@@ -96,17 +98,36 @@ func taskItems(tasks []queue.TaskInfo) []taskListItem {
 	return items
 }
 
+// queuedTaskItems numbers the items by queue slot so users can tell when
+// their task will start.
+func queuedTaskItems(tasks []queue.TaskInfo) []taskListItem {
+	items := taskItems(tasks)
+	for i := range items {
+		items[i].Position = i + 1
+	}
+	return items
+}
+
 func taskListText(title string, total int, items []taskListItem) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s (%d)", title, total)
 	limit := min(len(items), taskListLimit)
 	for i := 0; i < limit; i++ {
 		item := items[i]
-		fmt.Fprintf(&b, "\n\n%s: %s\n%s: %s\n%s: %s",
-			i18n.T(i18nk.BotMsgTasksFieldId), item.ID,
-			i18n.T(i18nk.BotMsgTasksFieldTitle), item.Title,
-			i18n.T(i18nk.BotMsgTasksFieldCreated), item.Created.In(time.Local).Format("2006-01-02 15:04:05"),
-		)
+		if item.Position > 0 {
+			fmt.Fprintf(&b, "\n\n#%d %s: %s\n%s: %s\n%s: %s",
+				item.Position,
+				i18n.T(i18nk.BotMsgTasksFieldId), item.ID,
+				i18n.T(i18nk.BotMsgTasksFieldTitle), item.Title,
+				i18n.T(i18nk.BotMsgTasksFieldCreated), item.Created.In(time.Local).Format("2006-01-02 15:04:05"),
+			)
+		} else {
+			fmt.Fprintf(&b, "\n\n%s: %s\n%s: %s\n%s: %s",
+				i18n.T(i18nk.BotMsgTasksFieldId), item.ID,
+				i18n.T(i18nk.BotMsgTasksFieldTitle), item.Title,
+				i18n.T(i18nk.BotMsgTasksFieldCreated), item.Created.In(time.Local).Format("2006-01-02 15:04:05"),
+			)
+		}
 	}
 	if len(items) > limit {
 		fmt.Fprintf(&b, "\n\n%s", i18n.T(i18nk.BotMsgTasksTruncatedNote, map[string]any{"Count": len(items)}))
@@ -150,7 +171,7 @@ func editQueuedTasks(ctx *ext.Context, update *ext.Update) error {
 	if len(tasks) == 0 {
 		text = i18n.T(i18nk.BotMsgTasksQueuedEmpty)
 	} else {
-		items := taskItems(tasks)
+		items := queuedTaskItems(tasks)
 		text = taskListText(i18n.T(i18nk.BotMsgTasksQueuedTitle), len(items), items)
 		markup.Rows = append(cancelTaskRows(items), markup.Rows...)
 	}

@@ -39,3 +39,13 @@ func GetWatchChatsByChatID(ctx context.Context, chatID int64) ([]*WatchChat, err
 	}
 	return watchChats, nil
 }
+
+// CountWatchChats returns the number of configured watches; used by the
+// /status readout.
+func CountWatchChats(ctx context.Context) (int64, error) {
+	var n int64
+	if err := db.WithContext(ctx).Model(&WatchChat{}).Count(&n).Error; err != nil {
+		return 0, err
+	}
+	return n, nil
+}

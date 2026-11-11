@@ -53,6 +53,8 @@ bot:
       update: "Check for updates"
       purge: "Clear the dedup/saved ledgers of a storage (after deleting messages by hand)"
       history: "Show saved file history"
+      status: "Show bot status (owner only)"
+      chatid: "Resolve a @username to its chat info"
     save_help_text: |
       Usage:
 
@@ -501,3 +503,28 @@ Last 14 days:
       stats_footer: "
 
 History tracks successful saves; /purge resets it per storage."
+    status:
+      not_permitted: "This command is only available to the bot's owner"
+      body: |-
+        📊 Bot status
+
+        Version: {{.Version}} ({{.Commit}}){{if .Docker}} · Docker{{end}}
+        Uptime: {{.Uptime}}
+        Workers: {{.Workers}} · Queue: {{.Queued}} queued / {{.Running}} running
+        Watches: {{.WatchCount}}
+        Cache size: {{.CacheSize}} · Resume state: {{.ResumeSize}}
+        Database: {{.DBSize}}
+
+        Disk free:
+        {{.DiskRows}}
+      cache_label: "cache"
+      disk_row: "  - {{.Name}} ({{.Path}}): {{.Free}} free
+"
+      no_local_disks: "  - no local storage roots"
+      unknown: "unknown"
+    chatid:
+      usage: "Usage: /id @username"
+      info: "Title: {{.Title}}
+Type: {{.Type}}
+ID: {{.ID}}"
+      error_resolve_failed: "Failed to resolve username: {{.Error}}"

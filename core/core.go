@@ -191,7 +191,15 @@ func worker(ctx context.Context, qe *queue.TaskQueue[Executable], semaphore chan
 	}
 }
 
+// coreStartTime anchors /status uptime. It is set once in Run; before
+// that (tests, package init) it falls back to package initialization.
+var coreStartTime = time.Now()
+
+// StartTime reports when the task engine started.
+func StartTime() time.Time { return coreStartTime }
+
 func Run(ctx context.Context) {
+	coreStartTime = time.Now()
 	log.FromContext(ctx).Info("Start processing tasks...")
 	semaphore := make(chan struct{}, config.C().Workers)
 	q := initQueue()
