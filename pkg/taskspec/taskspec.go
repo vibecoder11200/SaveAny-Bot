@@ -29,32 +29,43 @@ type TGFile struct {
 	Overwrite bool         `json:"overwrite,omitempty"`
 	// Done lists task element IDs whose upload already completed.
 	Done []string `json:"done,omitempty"`
+	// UserID is the users.id of the creating user; it scopes content dedup.
+	// 0 = created without a user context (web API): dedup stays off for the
+	// task, including after a resume rebuild.
+	UserID uint `json:"user_id,omitempty"`
 }
 
+// UserID scopes content dedup for a task; the field comment on TGFile
+// applies to every spec below that carries it.
 type DirectLinks struct {
-	URLs []string `json:"urls"`
+	UserID uint     `json:"user_id,omitempty"`
+	URLs   []string `json:"urls"`
 	// Path is the destination directory. A pointer distinguishes "root" from
 	// an old record that has no persisted path.
 	Path *string `json:"path,omitempty"`
 }
 
 type YTDLP struct {
-	URLs  []string `json:"urls"`
-	Flags []string `json:"flags,omitempty"`
+	UserID uint     `json:"user_id,omitempty"`
+	URLs   []string `json:"urls"`
+	Flags  []string `json:"flags,omitempty"`
 }
 
 type Aria2 struct {
-	GID  string   `json:"gid,omitempty"`
-	URIs []string `json:"uris"`
+	GID    string   `json:"gid,omitempty"`
+	UserID uint     `json:"user_id,omitempty"`
+	URIs   []string `json:"uris"`
 }
 
 type Parsed struct {
-	Item *parser.Item `json:"item"`
+	UserID uint         `json:"user_id,omitempty"`
+	Item   *parser.Item `json:"item"`
 }
 
 type Telegraph struct {
 	PhPath string   `json:"ph_path"`
 	Pics   []string `json:"pics"`
+	UserID uint     `json:"user_id,omitempty"`
 }
 
 // TransferItem describes one file of a storage-to-storage transfer.
@@ -71,5 +82,6 @@ type TransferItem struct {
 }
 
 type Transfer struct {
-	Items []TransferItem `json:"items"`
+	UserID uint           `json:"user_id,omitempty"`
+	Items  []TransferItem `json:"items"`
 }

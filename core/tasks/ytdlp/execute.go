@@ -13,7 +13,9 @@ import (
 	ytdlp "github.com/lrstanley/go-ytdlp"
 
 	"github.com/krau/SaveAny-Bot/config"
+	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/enums/ctxkey"
+	"github.com/krau/SaveAny-Bot/storage"
 )
 
 // Execute implements core.Executable.
@@ -205,9 +207,18 @@ func (t *Task) transferFile(ctx context.Context, tempDir, relPath string) error 
 
 	logger.Infof("Transferring file %s to %s:%s", relPath, t.Storage.Name(), destPath)
 
+	// Hash-only dedup: identical bytes under any name are dropped before the
+	// upload; a miss still records the hash after the save.
+	storageID := storage.ID(t.Storage)
+	skip, uploadHash := database.DedupSkipByHash(ctx, logger, t.UserID, storageID, f.Name(), destPath)
+	if skip {
+		logger.Infof("dedup skip: %s already saved", relPath)
+		return nil
+	}
 	if err := t.Storage.Save(ctx, f, destPath); err != nil {
 		return fmt.Errorf("failed to save file %s to storage: %w", relPath, err)
 	}
+	database.RecordDedupAfterUpload(ctx, logger, t.UserID, storageID, "", uploadHash, fileInfo.Size(), destPath)
 
 	logger.Infof("Successfully transferred file %s", relPath)
 

@@ -5,8 +5,10 @@ package retry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/krau/SaveAny-Bot/pkg/taskspec"
 	"path"
 
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
@@ -53,6 +55,10 @@ func FailedTask(ctx context.Context, extCtxs []*ext.Context, taskID string) (str
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to load task items: %w", err)
 	}
+	// The dedup user scope rides the persisted creation params; a record
+	// from before this field existed decodes as 0 (dedup off — safe).
+	var spec taskspec.TGFile
+	_ = json.Unmarshal([]byte(record.Params), &spec)
 	selected := retryableItems(items)
 	if len(selected) == 0 {
 		return "", 0, ErrNothingToRetry
@@ -109,13 +115,13 @@ func FailedTask(ctx context.Context, extCtxs []*ext.Context, taskID string) (str
 	taskCtx := storage.WithOverwrite(tgutil.ExtWithContext(ctx, taskExt))
 	var task core.Executable
 	if len(elems) == 1 {
-		single, err := tfile.NewTGFileTask(newID, taskCtx, elems[0].File, elems[0].Storage, elems[0].Path, nil)
+		single, err := tfile.NewTGFileTask(newID, taskCtx, elems[0].File, elems[0].Storage, elems[0].Path, nil, spec.UserID)
 		if err != nil {
 			return "", 0, fmt.Errorf("failed to create retry task: %w", err)
 		}
 		task = single
 	} else {
-		task = batchtfile.NewBatchTGFileTask(newID, taskCtx, elems, nil, true)
+		task = batchtfile.NewBatchTGFileTask(newID, taskCtx, elems, nil, true, spec.UserID)
 	}
 	if err := core.AddTaskWithSource(taskCtx, task, core.TaskSourceRetry); err != nil {
 		return "", 0, fmt.Errorf("failed to enqueue retry task: %w", err)

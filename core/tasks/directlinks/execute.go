@@ -14,8 +14,10 @@ import (
 	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
 	"github.com/krau/SaveAny-Bot/common/utils/ioutil"
 	"github.com/krau/SaveAny-Bot/config"
+	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/enums/ctxkey"
 	"github.com/krau/SaveAny-Bot/pkg/taskevent"
+	"github.com/krau/SaveAny-Bot/storage"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -170,7 +172,21 @@ func (t *Task) processLink(ctx context.Context, file *File) error {
 		if err != nil {
 			return fmt.Errorf("failed to seek cache file for resource %s: %w", file.URL, err)
 		}
-		return t.Storage.Save(ctx, cacheFile, filepath.Join(t.StorPath, file.Name))
+		// Hash-only dedup: identical bytes under any name are dropped before
+		// the upload; a miss still records the hash after the save so later
+		// saves of the same content skip.
+		storageID := storage.ID(t.Storage)
+		destPath := filepath.Join(t.StorPath, file.Name)
+		if skip, hash := database.DedupSkipByHash(ctx, logger, t.UserID, storageID, cacheFile.Name(), destPath); skip {
+			return nil
+		} else if hash != "" {
+			file.uploadHash = hash
+		}
+		if err := t.Storage.Save(ctx, cacheFile, destPath); err != nil {
+			return err
+		}
+		database.RecordDedupAfterUpload(ctx, logger, t.UserID, storageID, "", file.uploadHash, file.Size, destPath)
+		return nil
 	}, retry.RetryTimes(uint(config.C().Retry)), retry.Context(ctx))
 	if ctx.Err() != nil {
 		return ctx.Err()

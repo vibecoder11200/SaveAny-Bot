@@ -19,6 +19,7 @@ import (
 func CreateAndAddParsedTaskWithEdit(ctx *ext.Context, stor storage.Storage, dirPath string, item *parser.Item, msgID int, chatID int64) error {
 	injectCtx := tgutil.ExtWithContext(ctx.Context, ctx)
 	task := parsed.NewTask(xid.New().String(), injectCtx, stor, dirPath, item, parsed.NewProgress(msgID, chatID))
+	task.UserID = DedupUserIDForChat(ctx, chatID)
 	if err := core.AddTask(injectCtx, task); err != nil {
 		log.FromContext(ctx).Errorf("Failed to add task: %s", err)
 		ctx.EditMessage(chatID, &tg.MessagesEditMessageRequest{

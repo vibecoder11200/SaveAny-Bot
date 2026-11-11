@@ -14,5 +14,5 @@ func (t *Task) TaskParams() (json.RawMessage, error) {
 	if t.item == nil {
 		return nil, errors.New("task has no parsed item")
 	}
-	return json.Marshal(taskspec.Parsed{Item: t.item})
+	return json.Marshal(taskspec.Parsed{UserID: t.UserID, Item: t.item})
 }

@@ -3,6 +3,7 @@ package batchtfile
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -24,11 +25,14 @@ var _ core.Executable = (*Task)(nil)
 var _ core.DestinationInfo = (*Task)(nil)
 
 type TaskElement struct {
-	ID               string
-	Storage          storage.Storage
-	Path             string
-	File             tfile.TGFile
-	localPath        string
+	ID        string
+	Storage   storage.Storage
+	Path      string
+	File      tfile.TGFile
+	localPath string
+	// uploadHash caches the element's content hash computed by the
+	// pre-upload dedup check, so the post-upload record never re-hashes.
+	uploadHash       string
 	stream           bool
 	sourceGroupKey   string
 	sourceCaption    string
@@ -38,13 +42,21 @@ type TaskElement struct {
 	metadataGroupKey string
 }
 
+// errDedupSkipped marks an element the content dedup ledger dropped before
+// any download or upload; the batch assembly excludes it like a policy skip.
+var errDedupSkipped = errors.New("file already saved (deduped)")
+
 type Task struct {
-	ID              string
-	Done            []string
-	ctx             context.Context
-	elems           []TaskElement
-	Progress        ProgressTracker
-	IgnoreErrors    bool
+	ID           string
+	Done         []string
+	ctx          context.Context
+	elems        []TaskElement
+	Progress     ProgressTracker
+	IgnoreErrors bool
+	// UserID is the users.id of the creating user; 0 (web API) disables
+	// content dedup for this task. Persisted in TaskParams so resume
+	// rebuilds keep the scope.
+	UserID          uint
 	downloaded      atomic.Int64
 	totalSize       int64
 	uploadTotalSize atomic.Int64
@@ -131,6 +143,7 @@ func NewBatchTGFileTask(
 	files []TaskElement,
 	progress ProgressTracker,
 	ignoreErrors bool,
+	userID uint,
 ) *Task {
 	itemStates, itemIndex := newItemProgressStates(files)
 	task := &Task{
@@ -138,6 +151,7 @@ func NewBatchTGFileTask(
 		ctx:        ctx,
 		elems:      files,
 		Progress:   progress,
+		UserID:     userID,
 		downloaded: atomic.Int64{},
 		totalSize: func() int64 {
 			var total int64

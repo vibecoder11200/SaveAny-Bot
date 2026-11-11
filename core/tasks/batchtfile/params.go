@@ -37,5 +37,5 @@ func (t *Task) TaskParams() (json.RawMessage, error) {
 	if t.ctx != nil {
 		overwrite, _ = t.ctx.Value(ctxkey.OverwriteExisting).(bool)
 	}
-	return json.Marshal(taskspec.TGFile{Items: items, Overwrite: overwrite, Done: t.Done})
+	return json.Marshal(taskspec.TGFile{Items: items, Overwrite: overwrite, Done: t.Done, UserID: t.UserID})
 }

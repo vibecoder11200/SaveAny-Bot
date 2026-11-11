@@ -1,6 +1,7 @@
 package shortcut
 
 import (
+	"context"
 	"fmt"
 	"path"
 	"strings"
@@ -94,7 +95,8 @@ startCreateTask:
 	task, err := tftask.NewTGFileTask(taskid, injectCtx, file, stor, storagePath,
 		tftask.NewProgressTrack(
 			trackMsgID,
-			chatID))
+			chatID),
+		user.ID)
 	if err != nil {
 		logger.Errorf("create task failed: %s", err)
 		ctx.EditMessage(chatID, &tg.MessagesEditMessageRequest{
@@ -183,6 +185,14 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID, chatID int64,
 				})
 				return dispatcher.EndGroups
 			}
+		}
+		// Batch creation-time dedup pre-check: files the caller's ledger already
+		// holds for the resolved storage are dropped before the task exists and
+		// surface in the creation message's skipped list (fork UX). Overwrite
+		// never skips — execute-time hooks still hash and record under it.
+		if strategy != tcbdata.ConflictStrategyOverwrite && dedupSkipAtCreation(ctx, user.ID, fileStor, file) {
+			skipped = append(skipped, file.Name())
+			continue
 		}
 		if !matchedDirPath.NeedNewForAlbum() {
 			storPath := path.Join(matchedDirPath.String(), file.Name())
@@ -318,7 +328,7 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID, chatID int64,
 		return dispatcher.EndGroups
 	}
 	taskid := xid.New().String()
-	task := batchtfile.NewBatchTGFileTask(taskid, injectCtx, elems, batchtfile.NewProgressTrackerWithSkipped(trackMsgID, chatID, skipped), true)
+	task := batchtfile.NewBatchTGFileTask(taskid, injectCtx, elems, batchtfile.NewProgressTrackerWithSkipped(trackMsgID, chatID, skipped), true, user.ID)
 	if err := core.AddTask(injectCtx, task); err != nil {
 		logger.Errorf("Failed to add batch task: %s", err)
 		ctx.EditMessage(chatID, &tg.MessagesEditMessageRequest{
@@ -374,4 +384,21 @@ func buildBatchAddedMessage(count int, skipped []string) string {
 		"Count":   count,
 		"Skipped": strings.Join(skipped, "\n"),
 	})
+}
+
+// dedupSkipAtCreation is the batch creation-time dedup pre-check: it
+// reports whether the caller's ledger already holds the file (by Telegram
+// file-unique-id) under the resolved storage. Dedup is disabled without a
+// user scope (userID == 0, e.g. API-created flows) and for sources without
+// a file id; DedupHasFileID fails open, so a ledger error saves the file
+// rather than blocking it.
+func dedupSkipAtCreation(ctx context.Context, userID uint, stor storage.Storage, file tfile.TGFileMessage) bool {
+	if userID == 0 {
+		return false
+	}
+	fid := file.FileUniqueID()
+	if fid == "" {
+		return false
+	}
+	return database.DedupHasFileID(ctx, userID, storage.ID(stor), fid)
 }

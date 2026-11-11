@@ -15,5 +15,5 @@ func (t *Task) TaskParams() (json.RawMessage, error) {
 		urls = append(urls, file.URL)
 	}
 	path := t.StorPath
-	return json.Marshal(taskspec.DirectLinks{URLs: urls, Path: &path})
+	return json.Marshal(taskspec.DirectLinks{UserID: t.UserID, URLs: urls, Path: &path})
 }

@@ -39,6 +39,7 @@ func CreateAndAddYtdlpTaskWithEdit(ctx *ext.Context, stor storage.Storage, dirPa
 		dirPath,
 		ytdlp.NewProgress(msgID, chatID),
 	)
+	task.UserID = DedupUserIDForChat(ctx, chatID)
 
 	if err := core.AddTask(injectCtx, task); err != nil {
 		logger.Errorf("Failed to add yt-dlp task: %s", err)

@@ -26,5 +26,5 @@ func (t *Task) TaskParams() (json.RawMessage, error) {
 			ModTime:         elem.FileInfo.ModTime,
 		})
 	}
-	return json.Marshal(taskspec.Transfer{Items: items})
+	return json.Marshal(taskspec.Transfer{UserID: t.UserID, Items: items})
 }

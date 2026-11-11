@@ -10,5 +10,5 @@ import (
 var _ core.ParamSource = (*Task)(nil)
 
 func (t *Task) TaskParams() (json.RawMessage, error) {
-	return json.Marshal(taskspec.Telegraph{PhPath: t.PhPath, Pics: t.Pics})
+	return json.Marshal(taskspec.Telegraph{PhPath: t.PhPath, Pics: t.Pics, UserID: t.UserID})
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/krau/SaveAny-Bot/config"
+	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/enums/ctxkey"
 	"github.com/krau/SaveAny-Bot/pkg/taskevent"
 	"github.com/krau/SaveAny-Bot/storage"
@@ -92,6 +93,8 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 	ctx = context.WithValue(ctx, ctxkey.ContentLength, size)
 
 	if config.C().Stream {
+		// Streamed transfer has no local file to hash — the hash layer is
+		// N/A on this branch by design.
 		if err := elem.TargetStorage.Save(ctx, reader, storagePath); err != nil {
 			return fmt.Errorf("failed to upload file to storage: %w", err)
 		}
@@ -108,9 +111,19 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 			return fmt.Errorf("failed to seek temp file: %w", err)
 		}
 
-		logger.Infof("Uploading file to storage (size: %d bytes)", size)
-		if err := elem.TargetStorage.Save(ctx, tempFile, storagePath); err != nil {
-			return fmt.Errorf("failed to upload file to storage: %w", err)
+		// Hash-only dedup against the TARGET storage: a transfer is a save
+		// there like any other, so identical content already on the target
+		// skips the copy.
+		targetID := storage.ID(elem.TargetStorage)
+		skip, uploadHash := database.DedupSkipByHash(ctx, logger, t.UserID, targetID, tempFile.Name(), storagePath)
+		if skip {
+			logger.Infof("dedup skip: %s already saved", elem.FileInfo.Name)
+		} else {
+			logger.Infof("Uploading file to storage (size: %d bytes)", size)
+			if err := elem.TargetStorage.Save(ctx, tempFile, storagePath); err != nil {
+				return fmt.Errorf("failed to upload file to storage: %w", err)
+			}
+			database.RecordDedupAfterUpload(ctx, logger, t.UserID, targetID, "", uploadHash, size, storagePath)
 		}
 	}
 

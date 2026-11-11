@@ -19,18 +19,24 @@ var _ core.Executable = (*Task)(nil)
 var _ core.DestinationInfo = (*Task)(nil)
 
 type Task struct {
-	ID              string
-	ElementID       string
-	Done            []string
-	Ctx             context.Context
-	File            tfile.TGFile
-	Storage         storage.Storage
-	Path            string
-	Progress        ProgressTracker
+	ID        string
+	ElementID string
+	Done      []string
+	Ctx       context.Context
+	File      tfile.TGFile
+	Storage   storage.Storage
+	Path      string
+	Progress  ProgressTracker
+	// UserID is the users.id of the creating user; 0 (web API) disables
+	// content dedup for this task. Persisted in TaskParams so resume
+	// rebuilds keep the scope.
+	UserID          uint
 	stream          bool
 	localPath       string
 	execErr         error
-	skippedLarge    bool // the storage policy-skipped this file; nothing was uploaded
+	skippedLarge    bool   // the storage policy-skipped this file; nothing was uploaded
+	skippedDedup    bool   // content dedup dropped this file before any upload
+	uploadHash      string // sha256 of the downloaded cache file, recorded post-upload
 	metadataJSON    string
 	metadataVersion int
 }
@@ -51,6 +57,7 @@ func NewTGFileTask(
 	stor storage.Storage,
 	path string,
 	progress ProgressTracker,
+	userID uint,
 ) (*Task, error) {
 	metaJSON, metaVersion := buildFileMetadata(ctx, file)
 	_, ok := stor.(storage.StorageCannotStream)
@@ -67,6 +74,7 @@ func NewTGFileTask(
 			Storage:         stor,
 			Path:            path,
 			Progress:        progress,
+			UserID:          userID,
 			localPath:       cachePath,
 			metadataJSON:    metaJSON,
 			metadataVersion: metaVersion,
@@ -81,6 +89,7 @@ func NewTGFileTask(
 		Storage:         stor,
 		Path:            path,
 		Progress:        progress,
+		UserID:          userID,
 		stream:          true,
 		metadataJSON:    metaJSON,
 		metadataVersion: metaVersion,

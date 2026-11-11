@@ -10,5 +10,5 @@ import (
 var _ core.ParamSource = (*Task)(nil)
 
 func (t *Task) TaskParams() (json.RawMessage, error) {
-	return json.Marshal(taskspec.YTDLP{URLs: t.URLs, Flags: t.Flags})
+	return json.Marshal(taskspec.YTDLP{UserID: t.UserID, URLs: t.URLs, Flags: t.Flags})
 }

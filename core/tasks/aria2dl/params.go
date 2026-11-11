@@ -10,5 +10,5 @@ import (
 var _ core.ParamSource = (*Task)(nil)
 
 func (t *Task) TaskParams() (json.RawMessage, error) {
-	return json.Marshal(taskspec.Aria2{GID: t.GID, URIs: t.URIs})
+	return json.Marshal(taskspec.Aria2{GID: t.GID, UserID: t.UserID, URIs: t.URIs})
 }

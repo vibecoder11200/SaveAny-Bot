@@ -18,6 +18,7 @@ import (
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/config"
 	"github.com/krau/SaveAny-Bot/core"
+	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/enums/ctxkey"
 	"github.com/krau/SaveAny-Bot/pkg/storagetypes"
 	"github.com/krau/SaveAny-Bot/pkg/taskevent"
@@ -137,6 +138,76 @@ func (t *Task) skipLargeElem(ctx context.Context, logger *log.Logger, elem *Task
 	return true
 }
 
+// itemIsSkipped reports whether the item's phase is the skip phase.
+func (t *Task) itemIsSkipped(id string) bool {
+	t.itemMu.RLock()
+	defer t.itemMu.RUnlock()
+	idx, ok := t.itemIndex[id]
+	if !ok {
+		return false
+	}
+	return t.itemStates[idx].phase == ItemPhaseSkipped
+}
+
+// dedupSkipByFileID reports whether the element's Telegram file-id was
+// already saved to the element's storage by the task's user, marking the
+// item skipped when so. Fail-open: a ledger error never skips. Checking
+// before the download (and before a resend attempt) avoids spending any
+// bandwidth on content the ledger has seen.
+func (t *Task) dedupSkipByFileID(ctx context.Context, logger *log.Logger, elem *TaskElement) bool {
+	if t.UserID == 0 {
+		return false
+	}
+	fid := elem.File.FileUniqueID()
+	if fid == "" {
+		return false
+	}
+	// Overwrite (conflict strategy) means the user asked for a fresh copy:
+	// dedup never skips (the post-upload record below still indexes it).
+	if overwrite, _ := ctx.Value(ctxkey.OverwriteExisting).(bool); overwrite {
+		return false
+	}
+	storageID := storage.ID(elem.Storage)
+	if !database.DedupHasFileID(ctx, t.UserID, storageID, fid) {
+		return false
+	}
+	logger.Infof("dedup skip (file-id %s): already saved to storage %d, path %s", fid, storageID, elem.Path)
+	t.markItemSkipped(elem.ID)
+	t.notifyStateChange(ctx)
+	return true
+}
+
+// dedupSkipByHash checks the downloaded cache file against the ledger and,
+// on a hit, marks the item skipped: the upload is dropped, the cache file is
+// cleaned up by the caller. Returns the content hash on a miss so the caller
+// can record it after a successful upload without re-hashing.
+func (t *Task) dedupSkipByHash(ctx context.Context, logger *log.Logger, elem *TaskElement) string {
+	if t.UserID == 0 {
+		return ""
+	}
+	storageID := storage.ID(elem.Storage)
+	skip, hash := database.DedupSkipByHash(ctx, logger, t.UserID, storageID, elem.localPath, elem.Path)
+	if skip {
+		t.markItemSkipped(elem.ID)
+	}
+	return hash
+}
+
+// recordDedupAfterUpload indexes a genuinely uploaded element in the dedup
+// ledger; overwrite still records — the content is there either way.
+func (t *Task) recordDedupAfterUpload(ctx context.Context, logger *log.Logger, elem *TaskElement, size int64) {
+	if t.UserID == 0 {
+		return
+	}
+	storageID := storage.ID(elem.Storage)
+	if storageID == 0 {
+		return
+	}
+	srcChat, srcMsg := tgutil.SourceFromTGFile(elem.File)
+	database.RecordDedupAfterUploadWithSource(ctx, logger, t.UserID, storageID,
+		elem.File.FileUniqueID(), elem.uploadHash, size, elem.Path, srcChat, srcMsg)
+}
+
 // tryResendElem re-sends the element's Telegram source media straight to a
 // supporting storage — no download, no upload. handled reports that the
 // element's fate was decided (completed, or terminally failed on an
@@ -207,6 +278,7 @@ func (t *Task) processElements(ctx context.Context, elems []*TaskElement) error 
 }
 
 func (t *Task) processBatch(ctx context.Context, group executionGroup) error {
+	logger := log.FromContext(ctx).WithPrefix(fmt.Sprintf("batch[%s]", t.ID))
 	var cleanup []*TaskElement
 	defer func() {
 		for _, elem := range cleanup {
@@ -250,9 +322,9 @@ func (t *Task) processBatch(ctx context.Context, group executionGroup) error {
 
 	successElems := make([]*TaskElement, 0, len(group.elems))
 	for _, r := range results {
-		if errors.Is(r.err, storagetypes.ErrSkippedLarge) {
-			// Skipped by policy before the download: excluded from the batch,
-			// reported, not failed.
+		if errors.Is(r.err, storagetypes.ErrSkippedLarge) || errors.Is(r.err, errDedupSkipped) {
+			// Skipped before the download (policy or dedup): excluded from
+			// the batch, reported, not failed.
 			continue
 		}
 		if r.err == nil {
@@ -261,9 +333,29 @@ func (t *Task) processBatch(ctx context.Context, group executionGroup) error {
 	}
 	if len(successElems) == 0 {
 		if skipped := len(results) - len(successElems); skipped > 0 && skipped == len(results) {
-			return nil // every element was policy-skipped: nothing to upload
+			return nil // every element was skipped: nothing to upload
 		}
 		return fmt.Errorf("all elements failed to download")
+	}
+	// Hash dedup: filter elements and their future items in one lockstep
+	// pass so the progress callback attribution between the two slices stays
+	// aligned. Hashing a 2GB file takes ~1-2s — negligible next to the
+	// download that produced it.
+	if t.UserID > 0 {
+		if overwrite, _ := ctx.Value(ctxkey.OverwriteExisting).(bool); !overwrite {
+			filtered := make([]*TaskElement, 0, len(successElems))
+			for _, elem := range successElems {
+				elem.uploadHash = t.dedupSkipByHash(ctx, logger, elem)
+				if t.itemIsSkipped(elem.ID) {
+					continue
+				}
+				filtered = append(filtered, elem)
+			}
+			successElems = filtered
+			if len(successElems) == 0 {
+				return nil // every element deduped by hash
+			}
+		}
 	}
 
 	items := make([]storagetypes.BatchItem, 0, len(successElems))
@@ -315,6 +407,7 @@ func (t *Task) processBatch(ctx context.Context, group executionGroup) error {
 }
 
 func (t *Task) saveBatchItems(ctx context.Context, successElems []*TaskElement, items []storagetypes.BatchItem) error {
+	logger := log.FromContext(ctx).WithPrefix(fmt.Sprintf("batch_upload[%s]", t.ID))
 	t.startUpload(ctx)
 	if progressSaver, ok := successElems[0].Storage.(storage.StorageBatchProgressSaver); ok {
 		err := progressSaver.SaveBatchWithProgress(ctx, items, func(index int, uploaded, total int64) {
@@ -333,6 +426,7 @@ func (t *Task) saveBatchItems(ctx context.Context, successElems []*TaskElement, 
 		for index, elem := range successElems {
 			t.uploadCallback(ctx, elem.ID)(items[index].Size, items[index].Size)
 			t.markItemCompleted(elem.ID)
+			t.recordDedupAfterUpload(ctx, logger, elem, items[index].Size)
 		}
 		t.notifyStateChange(ctx)
 		return nil
@@ -354,6 +448,7 @@ func (t *Task) saveBatchItems(ctx context.Context, successElems []*TaskElement, 
 	for index, elem := range successElems {
 		t.uploadCallback(ctx, elem.ID)(items[index].Size, items[index].Size)
 		t.markItemCompleted(elem.ID)
+		t.recordDedupAfterUpload(ctx, logger, elem, items[index].Size)
 	}
 	t.notifyStateChange(ctx)
 	return nil
@@ -381,10 +476,15 @@ func (t *Task) unmarkProcessing(id string) {
 func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 	logger := log.FromContext(ctx).WithPrefix(fmt.Sprintf("file[%s]", elem.File.Name()))
 	logger.Info("Starting file download")
+	// Dedup runs before the SkipLarge check: the file-id is captured at
+	// construction and neither check costs a download. Album elements report
+	// the skip through the download result; the batch assembly excludes them
+	// below.
+	if t.dedupSkipByFileID(ctx, logger, elem) {
+		return errDedupSkipped
+	}
 	// A storage that drops oversized files (SkipLarge) is checked before the
-	// download: no bandwidth is spent on a file it will refuse. Album
-	// elements report the skip through the download result; the batch
-	// assembly excludes them below.
+	// download: no bandwidth is spent on a file it will refuse.
 	if t.skipLargeElem(ctx, logger, elem) {
 		return storagetypes.ErrSkippedLarge
 	}
@@ -432,10 +532,13 @@ func (t *Task) processElement(ctx context.Context, elem *TaskElement) error {
 	logger := log.FromContext(ctx).WithPrefix(fmt.Sprintf("file[%s]", elem.File.Name()))
 	// Pre-upload hooks run above the stream dispatch: with config.Stream on,
 	// anything wired only into the download/upload regions below never runs.
-	// Order mirrors the fork: file-id dedup check (added with the dedup
-	// layer) -> tryResend -> SkipLarge pre-check -> stream dispatch. Album
-	// elements (downloadElement) keep the normal upload: resending each item
-	// separately would break the source media group.
+	// Order mirrors the fork: file-id dedup check -> tryResend -> SkipLarge
+	// pre-check -> stream dispatch. Album elements (downloadElement) keep
+	// the normal upload: resending each item separately would break the
+	// source media group.
+	if t.dedupSkipByFileID(ctx, logger, elem) {
+		return nil
+	}
 	if handled, rerr := t.tryResendElem(ctx, logger, elem); handled {
 		return rerr
 	}
@@ -502,6 +605,9 @@ func (t *Task) processElement(ctx context.Context, elem *TaskElement) error {
 			t.notifyStateChange(ctx)
 			return fmt.Errorf("failed to persist element completion: %w", err)
 		}
+		// Record-after-upload runs in BOTH paths (locked stream decision);
+		// the hash layer is N/A-by-design for stream.
+		t.recordDedupAfterUpload(ctx, logger, elem, streamedBytes)
 		elem.saveMetadataSidecar(ctx, savedPath)
 		t.notifyStateChange(ctx)
 		logger.Info("File downloaded successfully in stream mode")
@@ -543,6 +649,18 @@ func (t *Task) processElement(ctx context.Context, elem *TaskElement) error {
 		t.markItemFailed(ctx, elem.ID, FailureStageDownload, err)
 		t.notifyStateChange(ctx)
 		return err
+	}
+	// Content-hash dedup: identical bytes under a different name are dropped
+	// here, after the download but before the upload. Overwrite skips the
+	// check but the record below still indexes the upload.
+	if overwrite, _ := ctx.Value(ctxkey.OverwriteExisting).(bool); !overwrite {
+		hash := t.dedupSkipByHash(ctx, logger, elem)
+		if t.itemIsSkipped(elem.ID) {
+			// Hash hit: the upload is dropped; the caller cleans the cache
+			// file up.
+			return nil
+		}
+		elem.uploadHash = hash
 	}
 	t.recordDownloadComplete(elem.ID, fileStat.Size())
 	vctx := context.WithValue(ctx, ctxkey.ContentLength, fileStat.Size())
@@ -606,6 +724,7 @@ func (t *Task) processElement(ctx context.Context, elem *TaskElement) error {
 			t.notifyStateChange(vctx)
 			return fmt.Errorf("failed to persist element completion: %w", err)
 		}
+		t.recordDedupAfterUpload(vctx, logger, elem, fileStat.Size())
 		elem.saveMetadataSidecar(vctx, savedPath)
 		t.notifyStateChange(vctx)
 		if err := os.Remove(elem.localPath); err != nil {

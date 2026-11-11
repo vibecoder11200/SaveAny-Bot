@@ -53,6 +53,11 @@ func executeStream(ctx context.Context, task *Task) error {
 		return err
 	}
 	logger.Info("File downloaded successfully in stream mode")
+	// Record-after-upload runs in BOTH paths (locked stream decision): the
+	// file-id pre-check above the dispatch and this recording are what keep
+	// stream dedup useful; the hash layer is N/A here by design — streamed
+	// uploads have no completed local cache file to hash.
+	task.recordDedupAfterUpload(ctx, logger, storage.ID(task.Storage))
 	task.saveMetadataSidecar(ctx, savedPath)
 	return nil
 }

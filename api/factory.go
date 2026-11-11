@@ -280,7 +280,9 @@ func (f *TaskFactory) createTGFilesTask(taskID string, createdAt time.Time, req 
 	var task core.Executable
 
 	if len(files) == 1 {
-		tfileTask, err := tfile.NewTGFileTask(taskID, f.ctx, files[0], stor, path.Join(req.Path, files[0].Name()), nil)
+		// userID 0: web-API-created tasks run content dedup off (locked
+		// decision — API saves have no user scope and must not share one).
+		tfileTask, err := tfile.NewTGFileTask(taskID, f.ctx, files[0], stor, path.Join(req.Path, files[0].Name()), nil, 0)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create tfile task: %w", err)
 		}
@@ -295,7 +297,8 @@ func (f *TaskFactory) createTGFilesTask(taskID string, createdAt time.Time, req 
 			elems = append(elems, *elem)
 		}
 
-		task = batchtfile.NewBatchTGFileTask(taskID, f.ctx, elems, nil, true)
+		// userID 0: web-API tasks run dedup off (locked decision, see above).
+		task = batchtfile.NewBatchTGFileTask(taskID, f.ctx, elems, nil, true, 0)
 	}
 
 	err = f.registerAndEnqueueTask(task, tasktype.TaskTypeTgfiles, stor.Name(), req.Path, req.Webhook)

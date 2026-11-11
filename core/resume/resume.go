@@ -156,7 +156,9 @@ func rebuild(ctx context.Context, record *database.TaskRecord) (core.Executable,
 		if spec.Path != nil {
 			target = *spec.Path
 		}
-		return directlinks.NewTask(record.TaskID, taskCtx, spec.URLs, stor, target, nil), taskCtx, nil
+		task := directlinks.NewTask(record.TaskID, taskCtx, spec.URLs, stor, target, nil)
+		task.UserID = spec.UserID
+		return task, taskCtx, nil
 	case tasktype.TaskTypeYtdlp:
 		var spec taskspec.YTDLP
 		if err := json.Unmarshal([]byte(record.Params), &spec); err != nil {
@@ -170,7 +172,9 @@ func rebuild(ctx context.Context, record *database.TaskRecord) (core.Executable,
 		if err != nil {
 			return nil, ctx, err
 		}
-		return ytdlp.NewTask(record.TaskID, taskCtx, spec.URLs, spec.Flags, stor, record.Path, nil), taskCtx, nil
+		task := ytdlp.NewTask(record.TaskID, taskCtx, spec.URLs, spec.Flags, stor, record.Path, nil)
+		task.UserID = spec.UserID
+		return task, taskCtx, nil
 	case tasktype.TaskTypeAria2:
 		var spec taskspec.Aria2
 		if err := json.Unmarshal([]byte(record.Params), &spec); err != nil {
@@ -204,7 +208,9 @@ func rebuild(ctx context.Context, record *database.TaskRecord) (core.Executable,
 				return nil, ctx, fmt.Errorf("failed to add aria2 task: %w", err)
 			}
 		}
-		return aria2dl.NewTask(record.TaskID, taskCtx, gid, spec.URIs, aria2Client, stor, record.Path, nil), taskCtx, nil
+		task := aria2dl.NewTask(record.TaskID, taskCtx, gid, spec.URIs, aria2Client, stor, record.Path, nil)
+		task.UserID = spec.UserID
+		return task, taskCtx, nil
 	case tasktype.TaskTypeParseditem:
 		var spec taskspec.Parsed
 		if err := json.Unmarshal([]byte(record.Params), &spec); err != nil {
@@ -221,7 +227,9 @@ func rebuild(ctx context.Context, record *database.TaskRecord) (core.Executable,
 		if err != nil {
 			return nil, ctx, err
 		}
-		return parsed.NewTask(record.TaskID, taskCtx, stor, record.Path, spec.Item, nil), taskCtx, nil
+		task := parsed.NewTask(record.TaskID, taskCtx, stor, record.Path, spec.Item, nil)
+		task.UserID = spec.UserID
+		return task, taskCtx, nil
 	case tasktype.TaskTypeTphpics:
 		var spec taskspec.Telegraph
 		if err := json.Unmarshal([]byte(record.Params), &spec); err != nil {
@@ -238,7 +246,9 @@ func rebuild(ctx context.Context, record *database.TaskRecord) (core.Executable,
 		if err != nil {
 			return nil, ctx, err
 		}
-		return telegraph.NewTask(record.TaskID, taskCtx, spec.PhPath, spec.Pics, stor, record.Path, tphclient.NewClient(), nil), taskCtx, nil
+		task := telegraph.NewTask(record.TaskID, taskCtx, spec.PhPath, spec.Pics, stor, record.Path, tphclient.NewClient(), nil)
+		task.UserID = spec.UserID
+		return task, taskCtx, nil
 	case tasktype.TaskTypeTransfer:
 		var spec taskspec.Transfer
 		if err := json.Unmarshal([]byte(record.Params), &spec); err != nil {
@@ -271,7 +281,9 @@ func rebuild(ctx context.Context, record *database.TaskRecord) (core.Executable,
 		if err != nil {
 			return nil, ctx, err
 		}
-		return transfer.NewTransferTask(record.TaskID, taskCtx, elems, nil, true), taskCtx, nil
+		task := transfer.NewTransferTask(record.TaskID, taskCtx, elems, nil, true)
+		task.UserID = spec.UserID
+		return task, taskCtx, nil
 	case tasktype.TaskTypeTgfiles:
 		return rebuildTG(ctx, record)
 	default:
@@ -353,7 +365,7 @@ func rebuildTG(ctx context.Context, record *database.TaskRecord) (core.Executabl
 		taskCtx = storage.WithOverwrite(taskCtx)
 	}
 	if len(spec.Items) == 1 {
-		task, err := tfile.NewTGFileTask(record.TaskID, taskCtx, elems[0].File, elems[0].Storage, elems[0].Path, nil)
+		task, err := tfile.NewTGFileTask(record.TaskID, taskCtx, elems[0].File, elems[0].Storage, elems[0].Path, nil, spec.UserID)
 		if err != nil {
 			return nil, ctx, err
 		}
@@ -361,7 +373,9 @@ func rebuildTG(ctx context.Context, record *database.TaskRecord) (core.Executabl
 		task.Done = spec.Done
 		return task, taskCtx, nil
 	}
-	task := batchtfile.NewBatchTGFileTask(record.TaskID, taskCtx, elems, nil, true)
+	// The persisted UserID keeps dedup scoped across restarts; a record from
+	// before this field existed decodes as 0 (dedup off — safe degradation).
+	task := batchtfile.NewBatchTGFileTask(record.TaskID, taskCtx, elems, nil, true, spec.UserID)
 	task.Done = spec.Done
 	return task, taskCtx, nil
 }

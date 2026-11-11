@@ -17,6 +17,7 @@ import (
 func CreateAndAddDirectTaskWithEdit(ctx *ext.Context, stor storage.Storage, dirPath string, links []string, msgID int, chatID int64) error {
 	injectCtx := tgutil.ExtWithContext(ctx.Context, ctx)
 	task := directlinks.NewTask(xid.New().String(), injectCtx, links, stor, dirPath, directlinks.NewProgress(msgID, chatID))
+	task.UserID = DedupUserIDForChat(ctx, chatID)
 	if err := core.AddTask(injectCtx, task); err != nil {
 		log.FromContext(ctx).Errorf("Failed to add task: %s", err)
 		ctx.EditMessage(chatID, &tg.MessagesEditMessageRequest{

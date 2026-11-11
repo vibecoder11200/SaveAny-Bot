@@ -16,6 +16,7 @@ import (
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/config"
 	"github.com/krau/SaveAny-Bot/core"
+	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/enums/ctxkey"
 	"github.com/krau/SaveAny-Bot/pkg/storagetypes"
 	tfilepkg "github.com/krau/SaveAny-Bot/pkg/tfile"
@@ -30,8 +31,22 @@ func (t *Task) Execute(ctx context.Context) (err error) {
 	}
 	// Pre-upload hooks run above the stream dispatch: with config.Stream on,
 	// anything wired only into the download/upload regions below never runs.
-	// Order mirrors the fork: file-id dedup check (added with the dedup
-	// layer) -> tryResend -> SkipLarge pre-check -> stream dispatch.
+	// Order mirrors the fork: file-id dedup check -> tryResend -> SkipLarge
+	// pre-check -> stream dispatch.
+	storageID := storage.ID(t.Storage)
+	// Overwrite (conflict strategy) means the user asked for a fresh copy:
+	// dedup still hashes and records below, but never skips.
+	overwrite, _ := t.Ctx.Value(ctxkey.OverwriteExisting).(bool)
+	if t.UserID > 0 && !overwrite {
+		if fid := t.File.FileUniqueID(); fid != "" && database.DedupHasFileID(ctx, t.UserID, storageID, fid) {
+			logger.Infof("dedup skip (file-id %s): already saved to storage %d, path %s", fid, storageID, t.Path)
+			t.skippedDedup = true
+			if t.Progress != nil {
+				t.Progress.OnDone(ctx, t, nil)
+			}
+			return nil
+		}
+	}
 	if handled, rerr := t.tryResend(ctx, logger); handled {
 		if t.Progress != nil {
 			t.Progress.OnDone(ctx, t, rerr)
@@ -80,6 +95,19 @@ func (t *Task) Execute(ctx context.Context) (err error) {
 	}
 	if t.File.Size() > 0 && fileStat.Size() == 0 {
 		return fmt.Errorf("downloaded file is empty (expected %d bytes)", t.File.Size())
+	}
+	// Content-hash dedup: identical bytes under a different name are dropped
+	// here, after the download but before the upload. Overwrite skips the
+	// check but the record below still indexes the upload. The hash layer is
+	// N/A-by-design for stream mode: streamed uploads have no completed
+	// local cache file to hash.
+	if !overwrite {
+		dedupSkip, hash := database.DedupSkipByHash(ctx, logger, t.UserID, storageID, t.localPath, t.Path)
+		if dedupSkip {
+			t.skippedDedup = true
+			return nil // the deferred OnDone reports success
+		}
+		t.uploadHash = hash
 	}
 	vctx := context.WithValue(ctx, ctxkey.ContentLength, fileStat.Size())
 	vctx = storagetypes.WithMessageMetadata(vctx, t.metadataJSON)
@@ -141,11 +169,24 @@ func (t *Task) Execute(ctx context.Context) (err error) {
 	if err := core.MarkTaskElementDone(ctx, t.ID, t.ElementID); err != nil {
 		return fmt.Errorf("failed to persist task completion: %w", err)
 	}
+	t.recordDedupAfterUpload(ctx, logger, storageID)
 	t.saveMetadataSidecar(ctx, savedPath)
 	if err := os.Remove(t.localPath); err != nil {
 		logger.Errorf("Failed to remove cache file: %v", err)
 	}
 	return nil
+}
+
+// recordDedupAfterUpload indexes a genuinely uploaded file in the dedup
+// ledger (both plain and stream paths); overwrite still records — the
+// content is there either way.
+func (t *Task) recordDedupAfterUpload(ctx context.Context, logger *log.Logger, storageID uint) {
+	if t.UserID == 0 || storageID == 0 {
+		return
+	}
+	srcChat, srcMsg := tgutil.SourceFromTGFile(t.File)
+	database.RecordDedupAfterUploadWithSource(ctx, logger, t.UserID, storageID,
+		t.File.FileUniqueID(), t.uploadHash, t.File.Size(), t.Path, srcChat, srcMsg)
 }
 
 func sourceCaption(file tfilepkg.TGFile) (string, bool) {
@@ -187,9 +228,16 @@ func (t *Task) tryResend(ctx context.Context, logger *log.Logger) (handled bool,
 	rerr := sender.SendExistingMedia(ctx, sendCtx, media, t.Path, caption)
 	if rerr == nil {
 		logger.Info("resend ok (no download/upload)")
-		// Dedup recording for resends lands with the dedup layer (records
-		// the file id with an empty content hash — the bytes never touched
-		// this disk).
+		// A resend records the file id with an empty content hash — the
+		// bytes never touched this disk. Recording is idempotent against the
+		// partial unique indexes.
+		if t.UserID > 0 {
+			srcChat, srcMsg := tgutil.SourceFromTGFile(t.File)
+			if derr := database.RecordDedupWithSource(ctx, t.UserID, storage.ID(t.Storage),
+				t.File.FileUniqueID(), "", t.File.Size(), t.Path, srcChat, srcMsg); derr != nil {
+				logger.Errorf("dedup record failed after resend (at-least-once duplicate risk): %v", derr)
+			}
+		}
 		return true, nil
 	}
 	if tgutil.ResendCanFallback(rerr) {

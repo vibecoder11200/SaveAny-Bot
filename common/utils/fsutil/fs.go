@@ -1,7 +1,10 @@
 package fsutil
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -59,6 +62,21 @@ func CreateFile(fp string) (*File, error) {
 		return nil, err
 	}
 	return &File{File: file}, nil
+}
+
+// Sha256File returns the hex-encoded sha256 of the file at path, streamed
+// with a 1 MiB buffer so large cache files never sit in memory twice.
+func Sha256File(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hasher := sha256.New()
+	if _, err := io.CopyBuffer(hasher, file, make([]byte, 1024*1024)); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 // SafeBaseName reduces a remote-provided name to one safe filename component.

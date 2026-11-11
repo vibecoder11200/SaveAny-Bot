@@ -17,6 +17,9 @@ type File struct {
 	Name string
 	URL  string
 	Size int64
+	// uploadHash caches the sha256 computed by the pre-upload dedup check so
+	// the post-upload record never re-hashes.
+	uploadHash string
 }
 
 func (f *File) FileName() string {
@@ -31,6 +34,10 @@ var _ core.Executable = (*Task)(nil)
 var _ core.DestinationInfo = (*Task)(nil)
 
 type Task struct {
+	// UserID is the users.id of the creating user; 0 (web API) disables
+	// content dedup for this task. Persisted in TaskParams so resume
+	// rebuilds keep the scope.
+	UserID   uint
 	ID       string
 	ctx      context.Context
 	files    []*File

@@ -11,7 +11,9 @@ import (
 	"github.com/duke-git/lancet/v2/retry"
 	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
 	"github.com/krau/SaveAny-Bot/config"
+	"github.com/krau/SaveAny-Bot/database"
 	"github.com/krau/SaveAny-Bot/pkg/taskevent"
+	"github.com/krau/SaveAny-Bot/storage"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -56,6 +58,7 @@ func (t *Task) Execute(ctx context.Context) error {
 }
 
 func (t *Task) processPic(ctx context.Context, picUrl string, index int) error {
+	logger := log.FromContext(ctx)
 	retryOpts := []retry.Option{
 		retry.Context(ctx),
 		retry.RetryTimes(uint(config.C().Retry)),
@@ -88,7 +91,19 @@ func (t *Task) processPic(ctx context.Context, picUrl string, index int) error {
 			if err != nil {
 				return fmt.Errorf("failed to seek cache file for picture %s: %w", filename, err)
 			}
-			err = t.Stor.Save(ctx, cacheFile, path.Join(t.StorPath, filename))
+			// Hash-only dedup for the cache-file branch (the streamed body
+			// branch has no local file to hash — N/A there).
+			storageID := storage.ID(t.Stor)
+			destPath := path.Join(t.StorPath, filename)
+			skip, uploadHash := database.DedupSkipByHash(ctx, logger, t.UserID, storageID, cacheFile.Name(), destPath)
+			if !skip {
+				err = t.Stor.Save(ctx, cacheFile, destPath)
+				if err == nil {
+					database.RecordDedupAfterUpload(ctx, logger, t.UserID, storageID, "", uploadHash, 0, destPath)
+				}
+			} else {
+				err = nil
+			}
 			if err != nil {
 				return fmt.Errorf("failed to save picture %s: %w", filename, err)
 			}

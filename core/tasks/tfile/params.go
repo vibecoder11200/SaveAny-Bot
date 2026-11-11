@@ -27,6 +27,7 @@ func (t *Task) TaskParams() (json.RawMessage, error) {
 	return json.Marshal(taskspec.TGFile{
 		Overwrite: overwrite,
 		Done:      t.Done,
+		UserID:    t.UserID,
 		Items: []taskspec.TGFileItem{{
 			ID:        t.ElementID,
 			ChatID:    tgutil.ChatIdFromPeer(message.GetPeerID()),

@@ -51,6 +51,8 @@ bot:
       watch: "Watch chats and notifications (UserBot)"
       parser: "Manage parsers"
       update: "Check for updates"
+      purge: "Clear the dedup/saved ledgers of a storage (after deleting messages by hand)"
+      history: "Show saved file history"
     save_help_text: |
       Usage:
 
@@ -451,3 +453,51 @@ bot:
       error_adding_aria2_download: "Failed to add Aria2 download task: {{.Error}}"
       info_aria2_download_added: "Aria2 download task added, GID: {{.GID}}"
       info_select_storage: "Please select storage, the task will be added to Aria2 download queue after selection"
+    purge:
+      usage: "Usage: /purge <storage_name>
+Clears this storage's dedup and saved-file records so content you deleted from it can be saved again."
+      not_permitted: "Only the bot owner can purge a storage's ledgers"
+      info_done: "Cleared records for storage {{.Storage}}:
+Dedup entries removed: {{.Deduped}}
+Saved-path entries removed: {{.SavedPath}}{{.Note}}"
+      error_not_found: "Storage not found: {{.Storage}}"
+      error_failed: "Purge failed: {{.Error}}"
+      error_partial: "
+Warning: saved-path purge failed: {{.Error}}"
+    history:
+      usage: "Usage: /history [page]
+/history search <text> [p<page>, e.g. p2]
+/history stats"
+      error_query: "Failed to query history: {{.Error}}"
+      empty: "No saved files recorded yet.
+Files appear here after they are saved successfully.
+Note: /purge resets the history of that storage."
+      no_matches: "No saved files match the search"
+      page_out_of_range: "Page {{.Page}} is past the last page ({{.Pages}})"
+      header: "🗂 Saved files ({{.Total}} total):
+"
+      search_header: "🗂 Saved files matching \"{{.Query}}\" ({{.Total}} total):
+"
+      row: "  - {{.Name}} [{{.Storage}}] {{.Size}} · {{.Time}} · {{.Source}}
+"
+      source_known: "from {{.Chat}}/{{.Message}}"
+      source_unknown: "source unknown"
+      footer: "
+Page {{.Page}}/{{.Pages}} · {{.Size}} per page · history tracks successful saves; /purge resets it per storage"
+      stats_header: "📈 Saved file stats
+
+Total: {{.Count}} files · {{.Size}}
+"
+      stats_by_storage_title: "
+By storage:
+"
+      stats_storage_row: "  - {{.Storage}}: {{.Count}} files · {{.Size}}
+"
+      stats_by_day_title: "
+Last 14 days:
+"
+      stats_day_row: "  - {{.Day}}: {{.Count}} files · {{.Size}}
+"
+      stats_footer: "
+
+History tracks successful saves; /purge resets it per storage."

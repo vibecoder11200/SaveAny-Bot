@@ -28,7 +28,7 @@ func (t *Task) ItemResults() []core.ItemResult {
 			result.Status = core.ItemStatusCancelled
 		}
 		result.Error = t.execErr.Error()
-	} else if t.skippedLarge {
+	} else if t.skippedLarge || t.skippedDedup {
 		// Visible skip, not a success: the user must know nothing arrived.
 		result.Status = core.ItemStatusSkipped
 	}

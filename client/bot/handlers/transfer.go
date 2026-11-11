@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/gotd/td/tg"
 	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/msgelem"
+	"github.com/krau/SaveAny-Bot/client/bot/handlers/utils/shortcut"
 	"github.com/krau/SaveAny-Bot/common/i18n"
 	"github.com/krau/SaveAny-Bot/common/i18n/i18nk"
 	"github.com/krau/SaveAny-Bot/common/utils/strutil"
@@ -238,6 +239,7 @@ func handleTransferCallback(ctx *ext.Context, userID, chatID int64, targetStorag
 		transfer.NewProgressTracker(msgID, chatID),
 		true, // IgnoreErrors
 	)
+	task.UserID = shortcut.DedupUserIDForChat(ctx, chatID)
 
 	if err := core.AddTask(injectCtx, task); err != nil {
 		ctx.EditMessage(chatID, &tg.MessagesEditMessageRequest{
