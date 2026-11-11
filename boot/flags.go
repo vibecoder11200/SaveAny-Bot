@@ -15,6 +15,7 @@ func RegisterFlags(cmd *cobra.Command) {
 	flags.String("db-path", "", "database file path (default <data-dir>/saveany.db)")
 	flags.String("listen", "", "web listen address as host:port (default 127.0.0.1:28080)")
 	flags.Bool("no-web", false, "do not start the web server")
+	flags.String("fork-db", "", "v0 database file to import once (one-shot data migration)")
 }
 
 type Options struct {
@@ -24,6 +25,7 @@ type Options struct {
 	Listen     string
 	NoWeb      bool
 	InitWeb    bool
+	ForkDBPath string
 }
 
 func Parse(cmd *cobra.Command) Options {
@@ -63,11 +65,16 @@ func Parse(cmd *cobra.Command) Options {
 	if listen == "" {
 		listen = os.Getenv("SAVEANY_LISTEN")
 	}
+	forkDB := getString("fork-db")
+	if forkDB == "" {
+		forkDB = os.Getenv("SAVEANY_FORK_DB")
+	}
 	return Options{
 		ConfigPath: configPath,
 		DataDir:    dataDir,
 		DBPath:     dbPath,
 		Listen:     listen,
 		NoWeb:      noWeb,
+		ForkDBPath: forkDB,
 	}
 }

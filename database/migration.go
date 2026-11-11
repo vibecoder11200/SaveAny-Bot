@@ -53,9 +53,9 @@ var forkIndexes = []string{
 
 func forkTables(tx *gorm.DB) error {
 	if err := tx.AutoMigrate(
-		&User{},           // + media_filter
-		&WatchChat{},      // + media_type, storage_id, dir_path, last_message_id
-		&SavedFileDedup{}, // new fork table
+		&User{},              // + media_filter
+		&WatchChat{},         // + media_type, storage_id, dir_path, last_message_id
+		&SavedFileDedup{},    // new fork table
 		&TelegramSavedFile{}, // new fork ledger table
 	); err != nil {
 		return err

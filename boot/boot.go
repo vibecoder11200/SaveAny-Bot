@@ -32,6 +32,9 @@ func Init(ctx context.Context, opts Options) (Result, error) {
 	if err := os.Chmod(opts.DataDir, 0o700); err != nil {
 		log.Warnf("Failed to restrict data directory permissions: %v", err)
 	}
+	if err := guardV0Database(opts.DBPath); err != nil {
+		return Result{}, err
+	}
 	database.Init(ctx, opts.DBPath)
 	if !settings.LegacyImported(ctx) {
 		if err := settings.ImportLegacy(ctx, opts.ConfigPath, opts.DataDir); err != nil {
@@ -40,6 +43,15 @@ func Init(ctx context.Context, opts Options) (Result, error) {
 	}
 	if err := database.MigrateMinioStorageType(ctx); err != nil {
 		log.Errorf("Failed to migrate MinIO storages to S3: %v", err)
+	}
+	if !settings.ForkDBImported(ctx) {
+		srcPath, ok := discoverForkDB(opts)
+		if ok {
+			if err := settings.ImportLegacyDB(ctx, srcPath); err != nil {
+				// Same tolerance as the TOML import: never block boot.
+				log.Errorf("Failed to import the v0 database: %v", err)
+			}
+		}
 	}
 	svc, err := settings.NewService(ctx, opts.DataDir)
 	if err != nil {
