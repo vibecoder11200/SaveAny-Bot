@@ -1,6 +1,6 @@
 <div align="center">
 
-# <img src="docs/static/logo.svg" width="45" align="center"> Save Any Bot
+# <img src="docs/static/logo.svg" width="45" align="center"> Save Any Bot (Fork)
 
 **English** | [简体中文](./README_zh.md)
 
@@ -16,6 +16,13 @@
 [![License](https://img.shields.io/github/license/krau/saveany-bot)](./LICENSE)
 
 </div>
+
+> [!NOTE]
+> **This is a fork** of [krau/SaveAny-Bot](https://github.com/krau/SaveAny-Bot), rebuilt on upstream v1.
+> Fork additions: watch extensions (`storage:` / `dir:` / `msgre:` / `mediatype:` filters + catch-up after
+> restart), 3-layer dedup with a re-save ledger (`/history`, `/purge`), ops commands (`/status`, `/id`,
+> task queue positions), resend by file ID, SkipLarge guard with forum topic routing, and a v0→v1
+> database importer. Detailed fork docs: _pending_.
 
 ## 🎯 Features
 
