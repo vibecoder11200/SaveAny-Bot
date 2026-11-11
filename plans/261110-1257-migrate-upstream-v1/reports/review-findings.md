@@ -122,3 +122,24 @@ no secrets in logs; i18n escaping on all fork call sites; mygotg context
 copy + PeerStorage/Sender sharing; queue position stability; Windows
 file-URI + path handling; no dead v0 ported code; no second floodwait
 waiter; all 7 locked feature groups present.
+
+## Failure-mode re-review of the fix commits (38d3e2e..652718e)
+
+Verdict: 0 Critical, 0 High. Notes (accepted, documented):
+
+- **DB pool serialized to 1 conn** (H-fix batch): a transaction that
+  queried the GLOBAL handle while holding its tx would deadlock. No such
+  call site exists (importer reads the v0 file through its own separate
+  handle; TouchWatchCursor is fully tx-scoped; Init-time helpers are
+  single-threaded). Any future tx + global-DB mixup must be avoided.
+- **H2 short-page rule vs deleted-message gaps**: a page shorter than the
+  window because of deleted messages stops the walk one boot early; the
+  per-single cursor touches make it converge over subsequent boots
+  (pre-existing planner semantics, not a H2 regression).
+- **M5 refuses v0 files missing a core ledger table** (e.g. saved_file_dedups
+  from a hypothetical pre-dedup fork state): conservative by design — the
+  production v0 schema has all three tables (fixture DDL is the reference).
+- **M4 storage-level SkipLarge inside the album fallback**: if a caller
+  bypasses the batch task's size pre-filter, a skipped member is logged at
+  the storage layer while the task reports overall success. The batch task
+  pre-filter (batchtfile execute.go) prevents this on all real paths.
