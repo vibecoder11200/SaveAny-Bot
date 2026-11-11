@@ -15,6 +15,13 @@
 
 </div>
 
+> [!NOTE]
+> **这是一个 fork**,基于上游 v1 重建:[krau/SaveAny-Bot](https://github.com/krau/SaveAny-Bot)。
+> 新增特性(文档见 [docs/fork/](docs/fork/)):watch 扩展(每-watch 覆盖、专辑过滤、启动补齐)、
+> 三层内容去重(`/history`、`/purge`)、运维命令(`/status`、`/id`)、file-id 秒传、
+> 下载守卫(停滞看门狗、FLOOD_WAIT 计量)、v0→v1 数据导入(`--fork-db`)。
+> 镜像 `Dockerfile.micro` / `Dockerfile.pico` 不含 web 控制台与 ffmpeg/yt-dlp(启动时会警告降级)。
+
 ## 特性
 
 - 支持文档、视频、图片、贴纸及 [Telegraph](https://telegra.ph/) 图集

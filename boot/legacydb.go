@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/log"
-	"gorm.io/gorm"
 
 	"github.com/krau/SaveAny-Bot/database"
 )
@@ -83,7 +82,7 @@ func discoverForkDB(opts Options) (string, bool) {
 			_ = sqlDB.Close()
 		}
 	}()
-	if smellsLikeV0(g) {
+	if database.SmellsLikeV0(g) {
 		log.Warnf("Found a v0 database at %s; importing it once (pass --fork-db to control this explicitly)", candidate)
 		return candidate, true
 	}
@@ -101,26 +100,6 @@ func samePath(a, b string) bool {
 		return false
 	}
 	return strings.EqualFold(aa, bb)
-}
-
-// smellsLikeV0 mirrors settings.smellsLikeV0DB at the boot layer (the boot
-// package cannot import settings: settings imports database only, while
-// boot imports settings — a settings→boot import would cycle).
-func smellsLikeV0(g *gorm.DB) bool {
-	tables, err := database.TableNames(g)
-	if err != nil {
-		return false
-	}
-	hasUsers := false
-	for _, t := range tables {
-		switch t {
-		case "users":
-			hasUsers = true
-		case "schema_migrations", "storages":
-			return false
-		}
-	}
-	return hasUsers
 }
 
 // ErrV0Database is returned by boot.Init when the active database path

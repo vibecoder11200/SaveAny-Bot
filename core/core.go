@@ -287,7 +287,15 @@ func AddTaskWithSource(ctx context.Context, task Executable, source string) erro
 		}
 	}
 	if err := database.CreateTaskRecord(ctx, record); err != nil {
+		// The task record is the persistence boundary (resume, /history,
+		// source attribution): a task running without its record would be
+		// lost on restart while its side effects (dedup, notify) still
+		// land — refuse the enqueue instead.
 		logger.Errorf("Failed to create task record for %s: %v", task.TaskID(), err)
+		if sink != nil {
+			sink.Emit(taskevent.Event{TaskID: task.TaskID(), Phase: taskevent.PhaseDone, Err: err})
+		}
+		return fmt.Errorf("persist task record for %s: %w", task.TaskID(), err)
 	}
 	if err := initQueue().Add(queue.NewTask(ctx, task.TaskID(), task.Title(), task)); err != nil {
 		if sink != nil {

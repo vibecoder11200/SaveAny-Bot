@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/krau/SaveAny-Bot/common/tdler"
 	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
+	"github.com/krau/SaveAny-Bot/core"
 	"github.com/krau/SaveAny-Bot/pkg/storagetypes"
 	"github.com/krau/SaveAny-Bot/storage"
 	"golang.org/x/sync/errgroup"
@@ -76,5 +77,8 @@ func executeStream(ctx context.Context, task *Task) error {
 	// uploads have no completed local cache file to hash.
 	task.recordDedupAfterUpload(ctx, logger, storage.ID(task.Storage))
 	task.saveMetadataSidecar(ctx, savedPath)
+	if err := core.MarkTaskElementDone(ctx, task.ID, task.ElementID); err != nil {
+		return fmt.Errorf("failed to persist task completion: %w", err)
+	}
 	return nil
 }

@@ -32,27 +32,6 @@ func ForkDBImported(ctx context.Context) bool {
 	return ok
 }
 
-// smellsLikeV0DB reports whether an opened database is a v0 database: a
-// users table without v1's schema_migrations/storages tables. Covers both
-// the fork v0 schema and the upstream-v0 base (same base tables).
-func smellsLikeV0DB(g *gorm.DB) bool {
-	tables, err := database.TableNames(g)
-	if err != nil {
-		return false
-	}
-	hasUsers := false
-	for _, t := range tables {
-		switch t {
-		case "users":
-			hasUsers = true
-		case "schema_migrations", "storages":
-			// v1 markers: this file already carries the new schema.
-			return false
-		}
-	}
-	return hasUsers
-}
-
 // ImportLegacyDB imports production data from a v0 database exactly once:
 // users, dirs, rules, watch chats (with catch-up cursors), the dedup
 // ledger and the telegram saved ledger. The source file is opened
@@ -80,7 +59,7 @@ func ImportLegacyDB(ctx context.Context, srcPath string) error {
 	if err == nil {
 		defer sqlDB.Close()
 	}
-	if !smellsLikeV0DB(src) {
+	if !database.SmellsLikeV0(src) {
 		return fmt.Errorf("refusing to import %s: it does not look like a v0 database (has v1 tables, or no users table)", srcPath)
 	}
 
@@ -147,8 +126,14 @@ func ImportLegacyDB(ctx context.Context, srcPath string) error {
 		return fmt.Errorf("list v1 storages: %w", err)
 	}
 	storageIDs := make(map[string]uint, len(storages))
+	namesByID := make(map[uint]string, len(storages))
 	for _, s := range storages {
-		storageIDs[strings.ToLower(s.Name)] = s.ID
+		key := strings.ToLower(s.Name)
+		if prev, ok := storageIDs[key]; ok && prev != s.ID {
+			log.Warnf("Storage names %q and %q differ only by case; v0 references resolve to the LAST one", namesByID[prev], s.Name)
+		}
+		storageIDs[key] = s.ID
+		namesByID[s.ID] = s.Name
 	}
 
 	// Referenced-but-unresolvable names feed the hollow-import refusal and
@@ -523,8 +508,19 @@ func ImportLegacyDB(ctx context.Context, srcPath string) error {
 			MessageID    int
 			CreatedAt    time.Time
 		}
+		// A section that cannot be probed (or is missing entirely) must
+		// abort the whole import: a silent skip would commit an incomplete
+		// migration behind the permanent marker. All three tables are core
+		// to every v0 fork release — their absence means the file is not a
+		// complete v0 database.
 		dedupCols, derr := database.ColumnNames(src, "saved_file_dedups")
-		if derr == nil && len(dedupCols) > 0 {
+		if derr != nil {
+			return fmt.Errorf("probe saved_file_dedups: %w", derr)
+		}
+		if len(dedupCols) == 0 {
+			return fmt.Errorf("refusing to import %s: saved_file_dedups table is missing", srcPath)
+		}
+		{
 			dedupSelect := "user_id, storage_name, file_unique_id, content_hash, size, storage_path"
 			if has(dedupCols, "chat_id") {
 				dedupSelect += ", chat_id"
@@ -581,7 +577,13 @@ func ImportLegacyDB(ctx context.Context, srcPath string) error {
 			CreatedAt   time.Time
 		}
 		tgCols, terr := database.ColumnNames(src, "telegram_saved_files")
-		if terr == nil && len(tgCols) > 0 {
+		if terr != nil {
+			return fmt.Errorf("probe telegram_saved_files: %w", terr)
+		}
+		if len(tgCols) == 0 {
+			return fmt.Errorf("refusing to import %s: telegram_saved_files table is missing", srcPath)
+		}
+		{
 			tgSelect := "storage_name, storage_path"
 			if has(tgCols, "created_at") {
 				tgSelect += ", created_at"
@@ -620,10 +622,19 @@ func ImportLegacyDB(ctx context.Context, srcPath string) error {
 
 		// In-flight v0 journal rows are NOT migrated (out of scope); count
 		// them so the boot log can surface the warning.
-		if ptCols, perr := database.ColumnNames(src, "pending_tasks"); perr == nil && len(ptCols) > 0 {
+		ptCols, perr := database.ColumnNames(src, "pending_tasks")
+		if perr != nil {
+			return fmt.Errorf("probe pending_tasks: %w", perr)
+		}
+		if len(ptCols) == 0 {
+			return fmt.Errorf("refusing to import %s: pending_tasks table is missing", srcPath)
+		}
+		{
 			var pending int64
 			if serr := src.Table("pending_tasks").Count(&pending).Error; serr == nil {
 				sum.pendingTasks = int(pending)
+			} else {
+				log.Warnf("Could not count v0 pending_tasks (advisory): %v", serr)
 			}
 		}
 

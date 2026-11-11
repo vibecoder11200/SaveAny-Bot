@@ -81,15 +81,29 @@ func createV0Fixture(t *testing.T) string {
 	return path
 }
 
-// setupImportV1 provisions a fresh v1 database (database.Init on a temp
-// path), seeds two TOML-style storage rows and returns a cleanup func.
-func setupImportV1(t *testing.T) {
+// initV1DB provisions a fresh v1 database on a temp path. database.Init
+// Fatalf's on an open failure, and the default ncruces WASM driver cannot
+// open absolute Windows paths (pre-existing upstream defect): probe-open
+// first and SKIP, not fail, on those platforms.
+func initV1DB(t *testing.T) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "v1.db")
+	if g, err := database.Open(path); err != nil {
+		t.Skipf("sqlite driver cannot open a database on this platform; run with -tags sqlite_glebarez: %v", err)
+	} else if sqlDB, dbErr := g.DB(); dbErr == nil {
+		_ = sqlDB.Close()
+	}
 	database.Init(context.Background(), path)
 	t.Cleanup(func() {
 		_ = database.Close()
 	})
+}
+
+// setupImportV1 provisions a fresh v1 database and seeds the TOML-style
+// local storage row the import mapping resolves against.
+func setupImportV1(t *testing.T) {
+	t.Helper()
+	initV1DB(t)
 	ctx := context.Background()
 	if err := database.DB().WithContext(ctx).Exec(
 		`INSERT INTO storages (name, type, enable, config, config_version) VALUES ('local', 'local', 1, '{}', 1)`).Error; err != nil {
@@ -322,9 +336,7 @@ func TestImportLegacyDBRefusesWrongFile(t *testing.T) {
 // rows exist and every v0 name reference fails to resolve — the import must
 // refuse and leave NO marker.
 func TestImportLegacyDBHollowImport(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "v1.db")
-	database.Init(context.Background(), path)
-	t.Cleanup(func() { _ = database.Close() })
+	initV1DB(t)
 	src := createV0Fixture(t)
 	copyPath := filepath.Join(t.TempDir(), "copy.db")
 	data, err := os.ReadFile(src)
@@ -343,5 +355,37 @@ func TestImportLegacyDBHollowImport(t *testing.T) {
 	// The refused transaction must have left nothing behind.
 	if n := v1RowCount(t, "users", ""); n != 0 {
 		t.Fatalf("refused import left %d user rows", n)
+	}
+}
+
+// TestImportLegacyDBProbeFailureFails: a source whose dedup table cannot be
+// probed (dropped mid-life) must fail the import — a silent section skip
+// would commit an incomplete migration behind the permanent marker.
+func TestImportLegacyDBProbeFailureFails(t *testing.T) {
+	setupImportV1(t)
+	src := createV0Fixture(t)
+	copyPath := filepath.Join(t.TempDir(), "copy.db")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(copyPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g, err := openV0Writable(copyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Exec(`DROP TABLE saved_file_dedups`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if sqlDB, err := g.DB(); err == nil {
+		_ = sqlDB.Close()
+	}
+	if err := ImportLegacyDB(context.Background(), copyPath); err == nil {
+		t.Fatal("unprobeable section must fail the import")
+	}
+	if ForkDBImported(context.Background()) {
+		t.Fatal("marker must stay absent after probe failure")
 	}
 }

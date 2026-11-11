@@ -18,6 +18,14 @@ func TestSanitizeFileName(t *testing.T) {
 		{"", ""},
 		{"my file (2026).mkv", "my file (2026).mkv"},
 		{"bad" + `<>:"|?*` + "name.txt", "bad" + strings.Repeat("_", 7) + "name.txt"},
+		// Windows reserved device stems must be shifted out, bare or with
+		// any extension.
+		{"CON", "CON_"},
+		{"con.txt", "con_.txt"},
+		{"nul.tar.gz", "nul_.tar.gz"},
+		{"com1.mp4", "com1_.mp4"},
+		{"console.mp4", "console.mp4"}, // stem "console" is not reserved
+		{"com10.txt", "com10.txt"},     // beyond COM9
 	}
 	for _, tt := range tests {
 		if got := SanitizeFileName(tt.input); got != tt.want {

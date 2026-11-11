@@ -62,8 +62,10 @@ None found by any lens.
   total failure** — FIXED: delivered members get their dedup/file-id
   records before the error returns, so retry cannot duplicate them.
 - **M5 (FailureMode) importer probe errors conflated with absent tables** —
-  FIXED: real PRAGMA errors fail the transaction; only an empty column
-  list means the table is absent.
+  FIXED: probe errors AND missing core tables (saved_file_dedups,
+  telegram_saved_files, pending_tasks: present in every v0 fork release)
+  abort the whole import; PRAGMA table_info returns empty rows, not an
+  error, for a dropped table, so absence is checked explicitly.
 - **M6 (Assumption) CreateTaskRecord error swallowed in AddTask** — FIXED:
   record failures fail the enqueue (a task must not run without its record;
   the watch cursor's durability boundary depends on it).
@@ -102,8 +104,8 @@ None found by any lens.
   case-colliding names.
 - L9 Windows reserved device names (CON, NUL…) unhandled by
   SanitizeFileName — FIXED: reserved-name prefix.
-- L10 resolveWatchTarget dead override branch — FIXED (simplifier).
-- L11 openReadOnlyDialector dead abstraction — FIXED (simplifier).
+- L10 resolveWatchTarget dead override branch — QUEUED (simplifier pass).
+- L11 openReadOnlyDialector dead abstraction — QUEUED (simplifier pass).
 - L12 README_zh lacks the fork banner — FIXED.
 - L13 plans/ process artifacts in the repo — ACCEPTED (plan folder is the
   coordination surface; pruning is a user choice).

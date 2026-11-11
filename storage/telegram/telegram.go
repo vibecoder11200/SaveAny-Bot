@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -772,6 +773,7 @@ func (t *Telegram) saveMediaGroup(
 	group []batchMediaItem,
 	onProgress func(index int, uploaded, total int64),
 ) error {
+	var skipLargeErr error
 	err := retry.Retry(func() error {
 		if len(group) == 1 && group[0].useSingleSave {
 			mediaItem := group[0]
@@ -784,12 +786,22 @@ func (t *Telegram) saveMediaGroup(
 			if item.PreserveCaption {
 				itemCtx = storagetypes.WithSourceCaption(itemCtx, item.Caption)
 			}
+			var serr error
 			if onProgress == nil {
-				return t.Save(itemCtx, item.Reader, item.StoragePath)
+				serr = t.Save(itemCtx, item.Reader, item.StoragePath)
+			} else {
+				serr = t.SaveWithProgress(itemCtx, item.Reader, item.StoragePath, func(uploaded, total int64) {
+					onProgress(mediaItem.index, uploaded, total)
+				})
 			}
-			return t.SaveWithProgress(itemCtx, item.Reader, item.StoragePath, func(uploaded, total int64) {
-				onProgress(mediaItem.index, uploaded, total)
-			})
+			if errors.Is(serr, storagetypes.ErrSkippedLarge) {
+				// SkipLarge is a configured outcome, not a failure: stop the
+				// retry loop (nil ends it) and surface the sentinel below so
+				// the task layer marks the item skipped instead of failed.
+				skipLargeErr = serr
+				return nil
+			}
+			return serr
 		}
 		if err := t.limiter.Wait(ctx); err != nil {
 			return fmt.Errorf("rate limit failed: %w", err)
@@ -833,6 +845,9 @@ func (t *Telegram) saveMediaGroup(
 		t.recordSaved(ctx, savedPaths...)
 		return nil
 	}, retry.Context(ctx), retry.RetryTimes(uint(config.C().Retry)))
+	if skipLargeErr != nil {
+		return skipLargeErr
+	}
 	if err == nil || len(group) == 1 || !isMediaRejectedByTelegram(err) {
 		return err
 	}
@@ -841,10 +856,13 @@ func (t *Telegram) saveMediaGroup(
 	// one — one problematic file must not doom its whole group. Losing the
 	// album grouping beats losing the files.
 	log.FromContext(ctx).Warnf("Album send rejected by Telegram (%v), falling back to %d individual message(s)", err, len(group))
+	delivered := make([]string, 0, len(group))
+	var firstErr error
 	for _, mediaItem := range group {
 		item := mediaItem.item
 		if _, serr := item.Reader.Seek(0, io.SeekStart); serr != nil {
-			return fmt.Errorf("album send rejected (%v); seek %s for single send: %w", err, item.StoragePath, serr)
+			firstErr = fmt.Errorf("album send rejected (%v); seek %s for single send: %w", err, item.StoragePath, serr)
+			break
 		}
 		itemCtx := context.WithValue(ctx, ctxkey.ContentLength, item.Size)
 		itemCtx = storagetypes.WithMessageMetadata(itemCtx, item.MetadataJSON)
@@ -860,10 +878,24 @@ func (t *Telegram) saveMediaGroup(
 			})
 		}
 		if serr != nil {
-			return fmt.Errorf("album send rejected (%v); single send of %s failed too: %w", err, item.StoragePath, serr)
+			if errors.Is(serr, storagetypes.ErrSkippedLarge) {
+				// A configured skip is not a failure: leave the item out and
+				// keep delivering the rest of the group.
+				log.FromContext(ctx).Infof("Album fallback: skipping oversize file %s (SkipLarge)", item.StoragePath)
+				continue
+			}
+			firstErr = fmt.Errorf("album send rejected (%v); single send of %s failed too: %w", err, item.StoragePath, serr)
+			break
 		}
+		delivered = append(delivered, item.StoragePath)
 	}
-	return nil
+	if len(delivered) > 0 {
+		// Record what WAS delivered before surfacing a partial failure: the
+		// fallback's ledger entries keep a later retry from re-saving the
+		// already-delivered items.
+		t.recordSaved(ctx, delivered...)
+	}
+	return firstErr
 }
 
 // isMediaRejectedByTelegram reports whether err is Telegram refusing the

@@ -53,6 +53,29 @@ func ColumnNames(g *gorm.DB, table string) ([]string, error) {
 	return names, nil
 }
 
+// SmellsLikeV0 reports whether an opened database is a v0 database: a users
+// table without v1's schema_migrations/storages tables. Covers both the
+// fork v0 schema and the upstream-v0 base (same base tables). Shared by the
+// boot guard, the fork-DB discovery and the legacy importer: one detector,
+// so the callers can never disagree about what counts as v0.
+func SmellsLikeV0(g *gorm.DB) bool {
+	tables, err := TableNames(g)
+	if err != nil {
+		return false
+	}
+	hasUsers := false
+	for _, t := range tables {
+		switch t {
+		case "users":
+			hasUsers = true
+		case "schema_migrations", "storages":
+			// v1 markers: this file already carries the new schema.
+			return false
+		}
+	}
+	return hasUsers
+}
+
 // Open opens a writable database handle through the configured driver —
 // used by tools and tests that must BUILD a database file (the importer
 // itself uses OpenReadOnly).

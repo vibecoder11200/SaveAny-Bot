@@ -232,6 +232,14 @@ func setupWatchDB(t *testing.T) {
 	// WASM driver cannot open absolute Windows paths (pre-existing upstream
 	// defect) — run these tests with -tags sqlite_glebarez.
 	path := filepath.Join(t.TempDir(), "watch_test.db")
+	// Probe-open: database.Init Fatalf's on an open failure, and the
+	// default ncruces WASM driver cannot open absolute Windows paths
+	// (pre-existing upstream defect) — skip, not fail, on those platforms.
+	if g, err := database.Open(path); err != nil {
+		t.Skipf("sqlite driver cannot open a database on this platform; run with -tags sqlite_glebarez: %v", err)
+	} else if sqlDB, dbErr := g.DB(); dbErr == nil {
+		_ = sqlDB.Close()
+	}
 	database.Init(context.Background(), path)
 	t.Cleanup(func() {
 		_ = database.Close()
