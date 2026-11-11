@@ -293,6 +293,16 @@ func AddTaskWithSource(ctx context.Context, task Executable, source string) erro
 		if sink != nil {
 			sink.Emit(taskevent.Event{TaskID: task.TaskID(), Phase: taskevent.PhaseDone, Err: err})
 		}
+		// FORK DIVERGENCE (preserve on upstream merges): upstream deletes the
+		// TaskRecord unconditionally here. A queue.ErrQueueClosed is the
+		// shutdown corner: the watch intake has already advanced its cursor
+		// past the event, so deleting the record would lose the file for
+		// good (no record, cursor past it). Keeping the record mirrors the
+		// fork's journal semantics — resume.Run re-queues it next boot.
+		if errors.Is(err, queue.ErrQueueClosed) {
+			logger.Warnf("Queue closed while adding task %s; record kept for restart recovery", task.TaskID())
+			return err
+		}
 		if dbErr := database.DeleteTaskRecord(ctx, task.TaskID()); dbErr != nil {
 			logger.Errorf("Failed to remove task record for %s: %v", task.TaskID(), dbErr)
 		}

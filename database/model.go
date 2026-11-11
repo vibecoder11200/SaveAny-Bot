@@ -30,8 +30,13 @@ type User struct {
 
 type WatchChat struct {
 	gorm.Model
-	UserID        uint   `gorm:"uniqueIndex:idx_watch_user_chat"`
-	ChatID        int64  `gorm:"uniqueIndex:idx_watch_user_chat"`
+	// (UserID, ChatID) is unique among live rows, enforced by the partial
+	// index idx_watch_chats_user_chat_active (EnsureWatchChatUniqueIndex) —
+	// a GORM tag cannot express its WHERE deleted_at IS NULL predicate, and
+	// a full unique index would collide with soft-deleted rows
+	// (watch→unwatch→watch-again).
+	UserID        uint
+	ChatID        int64
 	MessageFilter string // filter type and expression, for example msgre:foo
 	// MediaType accepts a comma-separated list (photo, video, document,
 	// audio); empty = no media type filtering.

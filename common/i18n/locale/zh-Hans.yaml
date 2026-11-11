@@ -148,6 +148,22 @@ bot:
       info_watch_list_header: "当前监听的聊天:\n"
       info_watch_list_filter_prefix: " (过滤器: "
       error_unwatch_chat_failed: "取消监听聊天失败: {{.Error}}"
+      error_dir_path_invalid: "无效的目录路径: {{.Error}}"
+      info_storage_lost: "<b>⚠️ 监听目标已变更</b>
+聊天 <code>{{.Chat}}</code> 的监听所指的存储已不存在, 新文件将保存到默认存储. 请重新创建该存储, 或使用 /watch 重新设置."
+      info_watch_list_storage_prefix: " (存储: "
+      info_watch_list_dir_prefix: " (目录: "
+      info_watch_list_mediatype_prefix: " (类型: "
+      notify_album_detected: "<b>🔔 监听到相册</b>
+共 <code>{{.Count}} 个文件</code>, 以 <code>{{.Name}}</code> 开头
+进度将在此处更新"
+      catchup_summary: |-
+        🔔 聊天 <code>{{.Chat}}</code> 的监听补拉已完成
+
+        拉取新消息: <code>{{.Fetched}}</code> 条
+        任务已加入队列: <code>{{.Enqueued}}</code> (相册: <code>{{.Albums}}</code>)
+        {{if .Capped}}已达到单次启动上限 ({{.Cap}} 条): 其余较新的消息已顺延, 将在下次重启时自动补拉.
+        {{end}}文件已入队, 尚未保存完成: 请留意任务结果通知.
       info_watch_chat_stopped: "已取消监听聊天: {{.Chat}}"
       info_notify_enabled: "已开启任务通知，监听到的消息及保存结果将在此反馈。"
       info_notify_disabled: "已关闭任务通知。"

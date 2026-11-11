@@ -418,6 +418,11 @@ func (s *Server) getHistoryLocked(request *tg.MessagesGetHistoryRequest, output 
 	for _, message := range s.byPeer[peerID(peerFromInput(request.Peer))] {
 		messages = append(messages, message)
 	}
+	// Telegram serves history newest-first; the watch catch-up paginator
+	// derives its walk anchor from the first element, so the order matters.
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
 	return setMessages(output, messages, s.chatEntitiesLocked())
 }
 

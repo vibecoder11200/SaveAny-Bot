@@ -190,7 +190,7 @@ func CreateAndAddBatchTGFileTaskWithEdit(ctx *ext.Context, userID, chatID int64,
 		// holds for the resolved storage are dropped before the task exists and
 		// surface in the creation message's skipped list (fork UX). Overwrite
 		// never skips — execute-time hooks still hash and record under it.
-		if strategy != tcbdata.ConflictStrategyOverwrite && dedupSkipAtCreation(ctx, user.ID, fileStor, file) {
+		if strategy != tcbdata.ConflictStrategyOverwrite && DedupSkipAtCreation(ctx, user.ID, fileStor, file) {
 			skipped = append(skipped, file.Name())
 			continue
 		}
@@ -392,7 +392,7 @@ func buildBatchAddedMessage(count int, skipped []string) string {
 // user scope (userID == 0, e.g. API-created flows) and for sources without
 // a file id; DedupHasFileID fails open, so a ledger error saves the file
 // rather than blocking it.
-func dedupSkipAtCreation(ctx context.Context, userID uint, stor storage.Storage, file tfile.TGFileMessage) bool {
+func DedupSkipAtCreation(ctx context.Context, userID uint, stor storage.Storage, file tfile.TGFileMessage) bool {
 	if userID == 0 {
 		return false
 	}

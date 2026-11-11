@@ -200,6 +200,17 @@ func ensureInputPeer(ctx *ext.Context, chatID int64) tg.InputPeerClass {
 	return peer
 }
 
+// ResolveInputPeer returns the stored input peer of a chat, or nil when the
+// peer cache has no entry (no network fallback — callers decide how to
+// handle an unknown peer).
+func ResolveInputPeer(ctx *ext.Context, chatID int64) tg.InputPeerClass {
+	peer := tryGetInputPeer(ctx, chatID)
+	if peer == nil || peer.Zero() {
+		return nil
+	}
+	return peer
+}
+
 func tryGetInputPeer(ctx *ext.Context, chatID int64) tg.InputPeerClass {
 	plain := constant.TDLibPeerID(chatID).ToPlain()
 	var channel constant.TDLibPeerID

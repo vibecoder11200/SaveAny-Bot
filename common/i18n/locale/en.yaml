@@ -148,6 +148,22 @@ bot:
       info_watch_list_header: "Currently watched chats:\n"
       info_watch_list_filter_prefix: " (filter: "
       error_unwatch_chat_failed: "Failed to unwatch chat: {{.Error}}"
+      error_dir_path_invalid: "Invalid dir path: {{.Error}}"
+      info_storage_lost: "<b>⚠️ Watch destination changed</b>
+The storage of your watch on chat <code>{{.Chat}}</code> no longer exists; new files are being saved to your default storage instead. Re-create the storage or set the watch again with /watch."
+      info_watch_list_storage_prefix: " (storage: "
+      info_watch_list_dir_prefix: " (dir: "
+      info_watch_list_mediatype_prefix: " (mediatype: "
+      notify_album_detected: "<b>🔔 Watched album detected</b>
+<code>{{.Count}} files</code> starting with <code>{{.Name}}</code>
+Progress will be reported here."
+      catchup_summary: |-
+        🔔 Watch catch-up finished for chat <code>{{.Chat}}</code>
+
+        New messages fetched: <code>{{.Fetched}}</code>
+        Tasks enqueued: <code>{{.Enqueued}}</code> (albums: <code>{{.Albums}}</code>)
+        {{if .Capped}}The per-boot cap ({{.Cap}} messages) was reached: the remaining NEWER messages are deferred and will be fetched automatically on the next restart.
+        {{end}}Files are enqueued, not yet saved: check the task result notifications.
       info_watch_chat_stopped: "Stopped watching chat: {{.Chat}}"
       info_notify_enabled: "Task notifications are enabled for every chat you watch: each saved message and its result is reported here."
       info_notify_disabled: "Task notifications are disabled for every chat you watch."

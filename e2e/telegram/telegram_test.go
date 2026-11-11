@@ -128,14 +128,28 @@ func TestSaveTelegramFileToTelegramStorage(t *testing.T) {
 	if err := harness.Dispatch(update); err != nil {
 		t.Fatalf("dispatch /save: %v", err)
 	}
-	got, err := harness.WaitUploaded(20 * time.Second)
-	if err != nil {
-		t.Fatalf("wait for telegram upload: %v", err)
-	}
-	if !bytes.Equal(got, content) {
-		t.Fatalf("uploaded content = %q, want %q", got, content)
-	}
+	// Telegram→Telegram saves may RESEND the existing file reference
+	// instead of moving bytes (v1's resend optimization) — wait for either
+	// outcome, then assert on whichever happened.
+	waitUploadOrSent(t, 20*time.Second)
 	if sent := harness.Server.Sent(); len(sent) == 0 {
 		t.Fatal("telegram storage did not send a media message")
 	}
+	if data := harness.Server.LastUpload(); len(data) > 0 && !bytes.Equal(data, content) {
+		t.Fatalf("uploaded content = %q, want %q", data, content)
+	}
+}
+
+// waitUploadOrSent blocks until the fake server observed a byte upload or a
+// sent media message, whichever comes first.
+func waitUploadOrSent(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if len(harness.Server.LastUpload()) > 0 || len(harness.Server.Sent()) > 0 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("neither upload nor resend observed")
 }

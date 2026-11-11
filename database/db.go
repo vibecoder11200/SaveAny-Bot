@@ -21,6 +21,12 @@ var dbPath string
 // DBPath returns the on-disk path of the SQLite database.
 func DBPath() string { return dbPath }
 
+// DB exposes the handle for tests and one-off administrative tooling; call
+// Init first. Nil until then.
+func DB() *gorm.DB {
+	return db
+}
+
 func Init(ctx context.Context, path string) {
 	dbPath = path
 	logger := log.FromContext(ctx)
@@ -47,6 +53,9 @@ func Init(ctx context.Context, path string) {
 	logger.Debug("Database connected")
 	if err := migrate(ctx); err != nil {
 		logger.Fatalf("Database migration failed: %v", err)
+	}
+	if err := EnsureWatchChatUniqueIndex(ctx); err != nil {
+		logger.Fatalf("Failed to ensure the watch unique index: %v", err)
 	}
 	logger.Info("Database initialized")
 }

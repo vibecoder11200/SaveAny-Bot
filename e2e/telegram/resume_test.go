@@ -132,7 +132,7 @@ func TestTelegramTaskDownloadResumesAfterMockFailure(t *testing.T) {
 	firstClient := &failingDownloadClient{Client: base, failAfter: 3}
 	file := tfilepkg.NewTGFile(location, firstClient, int64(len(content)), name)
 	storage := &recordingStorage{}
-	first, err := tfile.NewTGFileTask(taskID, context.Background(), file, storage, name, nil)
+	first, err := tfile.NewTGFileTask(taskID, context.Background(), file, storage, name, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestTelegramTaskDownloadResumesAfterMockFailure(t *testing.T) {
 
 	secondClient := &failingDownloadClient{Client: base}
 	file = tfilepkg.NewTGFile(location, secondClient, int64(len(content)), name)
-	second, err := tfile.NewTGFileTask(taskID, context.Background(), file, storage, name, nil)
+	second, err := tfile.NewTGFileTask(taskID, context.Background(), file, storage, name, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestTelegramBatchDownloadResumesAfterMockFailure(t *testing.T) {
 		return elems
 	}
 
-	first := batchtfile.NewBatchTGFileTask(taskID, context.Background(), makeElems(1), nil, false)
+	first := batchtfile.NewBatchTGFileTask(taskID, context.Background(), makeElems(1), nil, false, 0)
 	if err := first.Execute(context.Background()); err == nil {
 		t.Fatal("first batch download unexpectedly succeeded")
 	}
@@ -277,7 +277,7 @@ func TestTelegramBatchDownloadResumesAfterMockFailure(t *testing.T) {
 		}
 	}
 
-	second := batchtfile.NewBatchTGFileTask(taskID, context.Background(), makeElems(0), nil, false)
+	second := batchtfile.NewBatchTGFileTask(taskID, context.Background(), makeElems(0), nil, false, 0)
 	if err := second.Execute(context.Background()); err != nil {
 		t.Fatalf("resumed batch failed: %v", err)
 	}

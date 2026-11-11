@@ -48,6 +48,7 @@ type App struct {
 	appliedUserbotSession string
 	flowMu                sync.Mutex
 	flow                  *loginFlow
+	watchCatchUpOnce      sync.Once
 }
 
 func New(parent context.Context, svc *settings.Service, opts Options) *App {
@@ -112,6 +113,36 @@ func (a *App) Start() error {
 		defer close(a.resumeDone)
 		resume.Run(a.ctx)
 	}()
+
+	// Boot-only watch catch-up: backfill what watched chats delivered while
+	// the instance was down. It runs exactly once per process and NEVER
+	// inside ApplyTelegram, which re-runs on every telegram settings save.
+	// Requires the userbot (it is what fetches history) and waits for a
+	// client context — the bot preferred, the userbot as fallback — because
+	// the clients connect asynchronously.
+	if cfg.Telegram.Userbot.Enable {
+		a.watchCatchUpOnce.Do(func() {
+			go func() {
+				ticker := time.NewTicker(2 * time.Second)
+				defer ticker.Stop()
+				for {
+					clientCtx := bot.ExtContext()
+					if clientCtx == nil {
+						clientCtx = user.GetCtx()
+					}
+					if clientCtx != nil {
+						handlers.RunWatchCatchUp(clientCtx, user.GetCtx)
+						return
+					}
+					select {
+					case <-a.ctx.Done():
+						return
+					case <-ticker.C:
+					}
+				}
+			}()
+		})
+	}
 	return nil
 }
 
