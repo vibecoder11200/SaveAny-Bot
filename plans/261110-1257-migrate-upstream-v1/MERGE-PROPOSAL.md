@@ -7,7 +7,7 @@ migration, validates, and says merge.
 ## What this branch is
 
 A rebuild of the fork on upstream SaveAny-Bot v1.0.0-beta.5 (`upstream/main`),
-branch `v1`, 9 commits, **180 files changed, +13,393 / −454 lines**
+branch `v1`, 14 commits, **192 files changed, +14,253 / -461 lines**
 (`git diff upstream/main..v1`). Upstream wins overlaps; all fork feature
 groups were ported on top; 26 red-team plan findings applied during the
 build.
@@ -85,3 +85,27 @@ attempt to point v1 at the v0 data dir.
 - Revisit the two resume regressions on v1's resume model.
 - Prune upstream's unused i18n keys upstream-side (33 orphans exist upstream
   too; left alone to keep merges clean).
+
+## Phase 11 post-cook review (complete)
+
+Four-lens review of the full fork diff: **0 Critical, 4 High, 13 Medium, ~11 Low**.
+Ledger with per-finding disposition: [reports/review-findings.md](reports/review-findings.md).
+
+- High fixes (commit 2bff225): watch cursor resolution counters (H1) +
+  creation-time dedup for singles (M2); catch-up page window off-by-one (H2);
+  queue closed sentinel wrap (H3); batch resend dedup recording (H4); e2e
+  fake offset math (M7); SQLite pool serialization (BUSY storms).
+- Medium/Low fixes (ad2043c): album SkipLarge short-circuit (M3), album
+  fallback partial-delivery recording (M4), importer probe/missing-table
+  aborts (M5), task-record failure fails enqueue (M6), one v0-smell detector
+  (M11), probe-open+skipf tests (M13), stream MarkTaskElementDone (L1),
+  pico non-root (L5), case-collision warning (L8), reserved device names
+  (L9), README_zh banner (L12).
+- Simplifier pass (652718e): shared resend-dedup helper (M8), shared
+  download-guard classification (M9), layering inversion removed (M10),
+  SafeBaseName delegation (M12), dead branch removal (L10), dead dialector
+  removal (L11). Behavior-preserving; full battery green.
+- Failure-mode re-review of the fix commits: 0 Critical / 0 High; 4 notes
+  recorded in the ledger.
+- Test matrix: green (unit ncruces+glebarez, e2e telegram+api, tag-combo
+  builds, CGO-free builds, go generate idempotent).
