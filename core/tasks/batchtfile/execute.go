@@ -240,9 +240,16 @@ func (t *Task) tryResendElem(ctx context.Context, logger *log.Logger, elem *Task
 	rerr := sender.SendExistingMedia(ctx, sendCtx, media, elem.Path, caption)
 	if rerr == nil {
 		logger.Info("resend ok (no download/upload)")
-		// Dedup recording for resends lands with the dedup layer (records
-		// the file id with an empty content hash — the bytes never touched
-		// this disk).
+		// A resend records the file id with an empty content hash — the
+		// bytes never touched this disk. Recording is idempotent against the
+		// partial unique indexes.
+		if t.UserID > 0 {
+			srcChat, srcMsg := tgutil.SourceFromTGFile(elem.File)
+			if derr := database.RecordDedupWithSource(ctx, t.UserID, storage.ID(elem.Storage),
+				elem.File.FileUniqueID(), "", elem.File.Size(), elem.Path, srcChat, srcMsg); derr != nil {
+				logger.Errorf("dedup record failed after resend (at-least-once duplicate risk): %v", derr)
+			}
+		}
 		t.markItemCompleted(elem.ID)
 		t.notifyStateChange(ctx)
 		return true, nil

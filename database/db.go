@@ -47,6 +47,15 @@ func Init(ctx context.Context, path string) {
 	if err != nil {
 		logger.Fatalf("Failed to open database: %v", err)
 	}
+	if sqlDB, err := db.DB(); err == nil {
+		// SQLite allows exactly one writer. With GORM's default unlimited
+		// pool, concurrent read transactions upgrading to writes (cursor
+		// touches, dedup inserts during a watch catch-up burst) surface
+		// SQLITE_BUSY mid-transaction, which busy_timeout does not retry.
+		// One pooled connection serializes access deterministically.
+		sqlDB.SetMaxOpenConns(1)
+		sqlDB.SetMaxIdleConns(1)
+	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		logger.Warnf("Failed to restrict database permissions: %v", err)
 	}

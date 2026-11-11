@@ -30,13 +30,18 @@ const (
 	watchCatchUpPacing   = time.Second
 )
 
-// watchCatchUpCounters observes durable enqueues at the intake's
-// durability boundaries (after AddTask succeeds), so the summary can report
-// "enqueued" honestly.
+// watchCatchUpCounters observes intake outcomes during one catch-up run.
+// The fed/resolved pairs (singlesFed vs singles, groupFilesFed vs
+// albumResolved) gate the post-flush cursor advance: a message that was fed
+// but never reached a resolved outcome — enqueued, dedup-skipped or
+// deterministically filtered — must stay re-fetchable. The enqueue fields
+// (singles, albumFiles, albumTasks) additionally keep the summary honest.
 type watchCatchUpCounters struct {
-	singles    int
-	albumFiles int
-	albumTasks int
+	singlesFed    int
+	singles       int
+	albumResolved int
+	albumFiles    int
+	albumTasks    int
 }
 
 // watchCatchUpResult summarizes one watch's backfill run.
@@ -191,7 +196,7 @@ func runWatchCatchUpOne(botCtx *ext.Context, uctx *ext.Context, watch *database.
 		if offsetID != int(cursor) {
 			time.Sleep(watchCatchUpPacing)
 		}
-		return fetchHistoryPage(ctx, uctx, peer, offsetID, cursor)
+		return fetchHistoryPage(ctx, uctx, peer, offsetID)
 	}
 
 	msgs, capped, err := planWatchCatchUpPages(fetch, int(cursor), watchCatchUpCap)
@@ -258,12 +263,13 @@ func runWatchCatchUpOne(botCtx *ext.Context, uctx *ext.Context, watch *database.
 	// durable task (filtered-out types, regex rejects, plain text) — the
 	// same observation-counts semantics the live path applies. Without
 	// this, a ≥500 block of non-matching messages re-fetches on every boot
-	// forever. Only safe when every fed album file actually enqueued:
-	// a failed album flush must stay re-fetchable, and its IDs interleave
-	// with the singles above them, so any album loss blocks the whole
-	// advance (conservative, still progress-safe: failures are transient
-	// and logged).
-	if maxSeenID > 0 && int64(counters.albumFiles) == groupFilesFed {
+	// forever. Only safe when EVERY fed message resolved on its path: every
+	// fed single enqueued or dedup-skipped, and every fed album file
+	// flushed, filtered or skipped. A failed task/flush must stay
+	// re-fetchable, and single/album IDs interleave, so any unresolved
+	// message blocks the whole advance (conservative, still progress-safe:
+	// failures are transient and logged).
+	if maxSeenID > 0 && counters.singlesFed == counters.singles && int64(counters.albumResolved) == groupFilesFed {
 		_ = database.TouchWatchCursor(uctx, watch.ID, maxSeenID)
 	}
 
@@ -310,16 +316,24 @@ func fetchNewestMessageID(ctx *ext.Context, peer tg.InputPeerClass) (int64, erro
 	return 0, nil
 }
 
-// fetchHistoryPage fetches one page of history newer than minID: OffsetID
-// anchors the window, AddOffset shifts it toward newer messages, and MinID
-// filters anything the cursor already covers. Results arrive descending.
-func fetchHistoryPage(ctx context.Context, ectx *ext.Context, peer tg.InputPeerClass, offsetID int, minID int64) ([]*tg.Message, error) {
+// fetchHistoryPage fetches one page of history strictly above the anchor.
+// Telegram's offset window (core.telegram.org/api/offsets): positions count
+// from the newest, offset = pos(offsetID) + addOffset, and the response is
+// the `limit` messages at positions (offset, offset+limit]. The anchor
+// message itself rides in the window when addOffset == -limit, and MinID is
+// applied AFTER slicing — a page fetched with AddOffset:-limit + MinID
+// comes back one message short, which planPagesWithSize would read as
+// "caught up" (the walk stalls after one page). AddOffset:-(limit+1)
+// excludes the anchor, so a full page is exactly pageSize NEW messages and
+// a short page really means "fewer than pageSize+1 newer messages exist".
+// No MinID: the client-side `msg.ID <= cursor` filter in planPagesWithSize
+// does that job without breaking full-page detection.
+func fetchHistoryPage(ctx context.Context, ectx *ext.Context, peer tg.InputPeerClass, offsetID int) ([]*tg.Message, error) {
 	res, err := ectx.Raw.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
 		Peer:      peer,
 		OffsetID:  offsetID,
-		AddOffset: -watchCatchUpPageSize,
+		AddOffset: -(watchCatchUpPageSize + 1),
 		Limit:     watchCatchUpPageSize,
-		MinID:     int(minID),
 	})
 	if err != nil {
 		return nil, err

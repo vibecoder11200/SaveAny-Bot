@@ -5,6 +5,7 @@ package telegrame2e
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -102,5 +103,59 @@ func TestWatchCatchUp(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	if n := localFileCount(t); n != 0 {
 		t.Fatalf("second catch-up run saved %d file(s), want 0 (exactly-once)", n)
+	}
+}
+
+// TestWatchCatchUpPagination proves the multi-page walk: 120 missed
+// messages exceed one 100-message page, so the paginator must advance its
+// anchor across pages (with the anchor-riding window bug this stops at 99
+// and leaves the rest for later boots).
+func TestWatchCatchUpPagination(t *testing.T) {
+	harness.Server.ResetRecords()
+	if err := harness.ClearLocal(); err != nil {
+		t.Fatalf("clear local storage: %v", err)
+	}
+	ctx := context.Background()
+	user, err := database.GetUserByChatID(ctx, localUserID)
+	if err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	watch := database.WatchChat{UserID: user.ID, ChatID: channelID}
+	if err := database.DB().Create(&watch).Error; err != nil {
+		t.Fatalf("seed watch row: %v", err)
+	}
+	t.Cleanup(func() {
+		database.DB().Unscoped().Delete(&database.WatchChat{}, watch.ID)
+	})
+
+	peer := &tg.PeerChannel{ChannelID: channelID}
+	// Anchor the cursor on a real pre-watch message (fake IDs start at 1).
+	before := harness.Server.AddDocumentMessage(peer, peer, "page-before.txt", []byte("before\n"))
+	database.DB().Model(&database.WatchChat{}).Where("id = ?", watch.ID).
+		Update("last_message_id", before.ID)
+	const total = 120
+	newest := before.ID
+	for i := 0; i < total; i++ {
+		msg := harness.Server.AddDocumentMessage(peer, peer, fmt.Sprintf("page-%03d.txt", i), []byte(fmt.Sprintf("page %d\n", i)))
+		newest = msg.ID
+	}
+
+	handlers.RunWatchCatchUp(harness.Ext, func() *ext.Context { return harness.Ext })
+
+	deadline := time.Now().Add(60 * time.Second)
+	saved := 0
+	for time.Now().Before(deadline) {
+		saved = localFileCount(t)
+		if saved >= total {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if saved != total {
+		t.Fatalf("saved %d/%d paginated messages", saved, total)
+	}
+	cur, _, err := database.CurrentWatchCursor(ctx, watch.ID)
+	if err != nil || cur != int64(newest) {
+		t.Fatalf("cursor = %d err=%v, want %d", cur, err, newest)
 	}
 }

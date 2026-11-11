@@ -31,7 +31,10 @@ func (tq *TaskQueue[T]) Add(task *Task[T]) error {
 	defer tq.mu.Unlock()
 
 	if tq.closed {
-		return errors.New("queue is closed")
+		// Wrap the shared sentinel (not a fresh error): callers match with
+		// errors.Is — a fork divergence keeps the task record on this
+		// condition for restart recovery.
+		return fmt.Errorf("queue is closed: %w", ErrQueueClosed)
 	}
 
 	if _, exists := tq.taskMap[task.ID]; exists {

@@ -643,6 +643,9 @@ func processMediaEventForWatch(botCtx *ext.Context, event userclient.MediaMessag
 	if !watchFileMatchesFilter(watch, message) {
 		return
 	}
+	if opts.counters != nil {
+		opts.counters.singlesFed++
+	}
 	processWatchSingle(ctx, botCtx, watch, user, file, opts)
 }
 
@@ -779,13 +782,28 @@ func notifyWatchStorageLost(ctx *ext.Context, botCtx *ext.Context, watch *databa
 
 // processWatchSingle enqueues one non-grouped media message as a single
 // task. The cursor advances only after AddTask succeeds — the task record
-// is persisted inside AddTask, so that is the durability boundary.
-func processWatchSingle(ctx *ext.Context, botCtx *ext.Context, watch *database.WatchChat, user *database.User, file tfile.TGFileMessage, opts watchIntakeOpts) {
+// is persisted inside AddTask, so that is the durability boundary. It
+// returns whether the message reached a resolved outcome (durably enqueued
+// or dedup-skipped): a false return means the message stays re-fetchable.
+func processWatchSingle(ctx *ext.Context, botCtx *ext.Context, watch *database.WatchChat, user *database.User, file tfile.TGFileMessage, opts watchIntakeOpts) bool {
 	logger := log.FromContext(ctx)
 	stor, dirPath, err := resolveWatchFlushTarget(ctx, botCtx, watch, user, file)
 	if err != nil {
 		logger.Errorf("Failed to resolve watch target for user %d: %v", user.ChatID, err)
-		return
+		return false
+	}
+	// Creation-time content dedup, mirroring the album path (overwrite
+	// disables it): a hit means the content is already saved — a resolved
+	// outcome the cursor may advance past.
+	if watchConflictStrategy(user, opts.strategyPin) != tcbdata.ConflictStrategyOverwrite &&
+		shortcut.DedupSkipAtCreation(ctx, user.ID, stor, file) {
+		if file.Message() != nil {
+			_ = database.TouchWatchCursor(ctx, watch.ID, int64(file.Message().ID))
+		}
+		if opts.counters != nil {
+			opts.counters.singles++
+		}
+		return true
 	}
 	storagePath := path.Join(dirPath, file.Name())
 	injectCtx := tgutil.ExtWithContext(ctx.Context, ctx)
@@ -793,11 +811,11 @@ func processWatchSingle(ctx *ext.Context, botCtx *ext.Context, watch *database.W
 	task, err := coretfile.NewTGFileTask(taskid, injectCtx, file, stor, storagePath, newWatchNotifyProgress(ctx, botCtx, user), user.ID)
 	if err != nil {
 		logger.Errorf("create task failed: %s", err)
-		return
+		return false
 	}
 	if err := core.AddTask(injectCtx, task); err != nil {
 		logger.Errorf("add task failed: %s", err)
-		return
+		return false
 	}
 	if file.Message() != nil {
 		_ = database.TouchWatchCursor(ctx, watch.ID, int64(file.Message().ID))
@@ -806,6 +824,7 @@ func processWatchSingle(ctx *ext.Context, botCtx *ext.Context, watch *database.W
 		opts.counters.singles++
 	}
 	logger.Infof("Added media message task for user %d in chat %d: %s", watch.UserID, watch.ChatID, file.Name())
+	return true
 }
 
 // processWatchMediaGroup flushes one buffered watch media group: the msgre
@@ -826,7 +845,9 @@ func processWatchMediaGroup(ctx *ext.Context, botCtx *ext.Context, watch *databa
 		groupID, isGroup := file.Message().GetGroupedID()
 		if !isGroup || groupID == 0 {
 			// Defensive: only grouped files enter the buffer.
-			processWatchSingle(ctx, botCtx, watch, user, file, opts)
+			if processWatchSingle(ctx, botCtx, watch, user, file, opts) && opts.counters != nil {
+				opts.counters.albumResolved++
+			}
 			continue
 		}
 		if _, ok := groups[groupID]; !ok {
@@ -837,11 +858,26 @@ func processWatchMediaGroup(ctx *ext.Context, botCtx *ext.Context, watch *databa
 	regex := watchFilterRegexFor(watch)
 	if watch.MessageFilter != "" && regex == nil {
 		logger.Warnf("Invalid filter format in chat %d, dropping %d buffered files", watch.ChatID, len(files))
+		// A stored filter that no longer compiles drops deterministically on
+		// every re-fetch — resolved, so catch-up is not stalled forever by
+		// corrupt data that creation-time validation already rejects.
+		if opts.counters != nil {
+			for _, f := range files {
+				if gid, grouped := f.Message().GetGroupedID(); grouped && gid != 0 {
+					opts.counters.albumResolved++
+				}
+			}
+		}
 		return
 	}
 	for _, groupID := range groupIDs {
 		groupFiles := groups[groupID]
 		if watch.MessageFilter != "" && !groupMatchesFilter(regex, groupFiles) {
+			// Filtered-out groups are resolved: the regex is deterministic,
+			// re-fetching would reject the same album again.
+			if opts.counters != nil {
+				opts.counters.albumResolved += len(groupFiles)
+			}
 			continue
 		}
 		stor, dirPath, err := resolveWatchFlushTarget(ctx, botCtx, watch, user, groupFiles[0])
@@ -932,6 +968,9 @@ func processWatchMediaGroup(ctx *ext.Context, botCtx *ext.Context, watch *databa
 		// Cursor advances only past a durably enqueued (or fully resolved)
 		// group — a failed AddTask must leave the group for the next run.
 		if flushed {
+			if opts.counters != nil {
+				opts.counters.albumResolved += len(groupFiles)
+			}
 			var maxMsgID int64
 			for _, gf := range groupFiles {
 				if id := int64(gf.Message().ID); id > maxMsgID {

@@ -414,14 +414,39 @@ func (s *Server) getMessagesLocked(ids []tg.InputMessageClass, output bin.Decode
 }
 
 func (s *Server) getHistoryLocked(request *tg.MessagesGetHistoryRequest, output bin.Decoder) error {
-	var messages []tg.MessageClass
-	for _, message := range s.byPeer[peerID(peerFromInput(request.Peer))] {
-		messages = append(messages, message)
+	msgs := s.byPeer[peerID(peerFromInput(request.Peer))]
+	// Telegram's offset window (core.telegram.org/api/offsets): positions
+	// count from the newest (p=0), offset = pos(offsetID) + addOffset, and
+	// the response holds the `limit` messages at positions
+	// (offset, offset+limit] — newest-first. The watch catch-up paginator
+	// depends on this exact math (AddOffset = -(limit+1) excludes the
+	// anchor), so the fake honors it instead of dumping everything.
+	maxID := 0
+	for _, m := range msgs {
+		if m.ID > maxID {
+			maxID = m.ID
+		}
 	}
-	// Telegram serves history newest-first; the watch catch-up paginator
-	// derives its walk anchor from the first element, so the order matters.
-	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
-		messages[i], messages[j] = messages[j], messages[i]
+	limit := request.Limit
+	var loIncl, hiExcl int
+	if request.OffsetID == 0 || maxID == 0 {
+		// offset_id 0 starts from the newest message: newest `limit`.
+		hiExcl = maxID + 1
+		loIncl = maxID + 1 - limit
+	} else {
+		// pos(offsetID) = maxID - offsetID; window IDs are
+		// [offsetID - addOffset - limit, offsetID - addOffset).
+		hiExcl = request.OffsetID - request.AddOffset
+		loIncl = request.OffsetID - request.AddOffset - limit
+	}
+	messages := make([]tg.MessageClass, 0, limit)
+	for id := hiExcl - 1; id >= loIncl && len(messages) < limit; id-- {
+		for _, m := range msgs {
+			if m.ID == id {
+				messages = append(messages, m)
+				break
+			}
+		}
 	}
 	return setMessages(output, messages, s.chatEntitiesLocked())
 }
