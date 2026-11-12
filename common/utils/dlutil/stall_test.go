@@ -2,6 +2,7 @@ package dlutil
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -67,5 +68,40 @@ func TestStallWatchdog_ParentCancelPropagates(t *testing.T) {
 	}
 	if wdog.Stalled() {
 		t.Fatal("Stalled must be false when the parent was canceled, not a stall")
+	}
+}
+
+// A sustained floodwait that also starves byte progress past the stall
+// window fires BOTH guards: the meter's verdict (crawl) must win — it is
+// the specific cause; the watchdog only fired alongside it.
+func TestDownloadFailure_MeterBeatsWatchdog(t *testing.T) {
+	// Independent guards: in production both watch the same download but
+	// neither derives from the other, so the watchdog canceling must not
+	// stop the meter's own window tick.
+	wdog, _ := NewStallWatchdog(context.Background(), 10*time.Millisecond)
+	defer wdog.Close()
+	mctx, mcancel := context.WithCancel(context.Background())
+	meter := newFloodWaitMeter(mctx, mcancel, 50*time.Millisecond, time.Nanosecond)
+	defer meter.Close()
+	// Absorb enough slow-RPC time to trip the meter at its window tick
+	// (maxSlow = 25ms) while the 10ms watchdog fires in parallel.
+	meter.Observe(5*time.Millisecond, nil)
+	meter.Observe(5*time.Millisecond, nil)
+	meter.Observe(5*time.Millisecond, nil)
+	meter.Observe(5*time.Millisecond, nil)
+	meter.Observe(5*time.Millisecond, nil)
+	meter.Observe(5*time.Millisecond, nil)
+	time.Sleep(120 * time.Millisecond) // let both fire
+	err := DownloadFailure(context.Canceled, wdog, meter)
+	if !strings.Contains(err.Error(), "flood-wait absorbed") {
+		t.Fatalf("DownloadFailure with both guards fired = %v; want the crawl verdict", err)
+	}
+}
+
+// The auto-sleep cap must sit strictly inside the stall window: a
+// max-length sleep has to finish before the watchdog can fire.
+func TestMaxAutoFloodWait_InsideStallWindow(t *testing.T) {
+	if MaxAutoFloodWait >= DownloadStallTimeout {
+		t.Fatalf("MaxAutoFloodWait (%v) must be below DownloadStallTimeout (%v)", MaxAutoFloodWait, DownloadStallTimeout)
 	}
 }

@@ -66,7 +66,7 @@ func newWatchNotifyProgress(ctx context.Context, botCtx *ext.Context, user *data
 // are left out on purpose: sending and editing messages does not need them, and
 // the shared map would be one more thing to share across goroutines.
 func newBotContext(ctx context.Context, botCtx *ext.Context) *ext.Context {
-	return ext.NewContext(ctx, botCtx.Raw, botCtx.PeerStorage, botCtx.Self, botCtx.Sender, nil, false)
+	return newExtContext(ctx, botCtx, nil)
 }
 
 // progress returns the tracker of the notification, opening it on first use.

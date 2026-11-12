@@ -131,7 +131,7 @@ func handleSilentMode(next func(*ext.Context, *ext.Update) error, handler func(*
 			base = dirutil.WithContext(base, dir)
 		}
 		base = storage.WithContext(base, stor)
-		child := ext.NewContext(base, ctx.Raw, ctx.PeerStorage, ctx.Self, ctx.Sender, ctx.Entities, false)
+		child := newExtContext(base, ctx, ctx.Entities)
 		return handler(child, update)
 	}
 }

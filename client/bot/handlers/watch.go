@@ -579,18 +579,30 @@ func processMediaEventForWatch(botCtx *ext.Context, event userclient.MediaMessag
 		return
 	}
 
-	// Live cursor: advance on every observed media event for this watch,
-	// BEFORE any filter — a busy channel whose messages mostly do not match
-	// must still move the cursor, or every boot re-walks the same window.
+	// Live cursor: advance only when this event RESOLVED — durably
+	// enqueued, dedup-skipped, or deterministically filtered. An enqueue
+	// failure leaves the message below the cursor, so the next boot's
+	// catch-up re-fetches and retries it (the pre-resolution advance that
+	// jumped the cursor past failed enqueues is gone). Busy-channel
+	// correctness is preserved because filter outcomes count as resolved:
+	// a busy channel whose messages mostly do not match still moves the
+	// cursor event by event. Buffered album members resolve later, in the
+	// flush callback (which advances per flushed group).
+	resolved := true
 	if opts.live {
-		if err := database.TouchWatchCursor(ctx, watch.ID, int64(event.MessageID)); err != nil {
-			logger.Warnf("Failed to advance watch cursor for chat %d: %v", watch.ChatID, err)
-		}
+		defer func() {
+			if resolved {
+				if err := database.TouchWatchCursor(ctx, watch.ID, int64(event.MessageID)); err != nil {
+					logger.Warnf("Failed to advance watch cursor for chat %d: %v", watch.ChatID, err)
+				}
+			}
+		}()
 	}
 
 	user, err := database.GetUserByID(ctx, watch.UserID)
 	if err != nil {
 		logger.Errorf("Failed to get user by ID %d: %v", watch.UserID, err)
+		resolved = false
 		return
 	}
 	// Media type check first (fork ordering): a filtered-out type never
@@ -603,7 +615,8 @@ func processMediaEventForWatch(botCtx *ext.Context, event userclient.MediaMessag
 		if err != nil {
 			// Stored values are validated at watch creation; a parse
 			// failure here means corrupt data — match nothing rather than
-			// silently saving everything.
+			// silently saving everything. Deterministic, so resolved: the
+			// owner hears about it once via the log.
 			logger.Errorf("Invalid stored mediatype filter in chat %d, skipping: %v", watch.ChatID, err)
 			return
 		}
@@ -625,7 +638,10 @@ func processMediaEventForWatch(botCtx *ext.Context, event userclient.MediaMessag
 	if isGroup && groupID != 0 {
 		// ANY watched media group becomes ONE batch task at flush — the
 		// msgre filter is evaluated per group at flush time, because only
-		// one album member carries the caption.
+		// one album member carries the caption. Resolution happens at
+		// flush (the callback advances the cursor past flushed groups);
+		// this event stays unresolved until then.
+		resolved = false
 		watchMediaGroupMgr.addFile(event.ChatID, watch.UserID, file, time.Duration(max(config.C().Telegram.MediaGroupTimeout, 1))*
 			time.Second, func(files []tfile.TGFileMessage) {
 			processWatchMediaGroup(ctx, botCtx, watch, user, files, opts)
@@ -639,7 +655,9 @@ func processMediaEventForWatch(botCtx *ext.Context, event userclient.MediaMessag
 	if opts.counters != nil {
 		opts.counters.singlesFed++
 	}
-	processWatchSingle(ctx, botCtx, watch, user, file, opts)
+	if !processWatchSingle(ctx, botCtx, watch, user, file, opts) {
+		resolved = false
+	}
 }
 
 // applyFilenameStrategy renames the file per the user's filename strategy

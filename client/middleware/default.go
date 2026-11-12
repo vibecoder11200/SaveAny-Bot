@@ -9,6 +9,7 @@ import (
 	"github.com/gotd/td/telegram"
 	"github.com/krau/SaveAny-Bot/client/middleware/recovery"
 	"github.com/krau/SaveAny-Bot/client/middleware/retry"
+	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
 	"github.com/krau/SaveAny-Bot/config"
 )
 
@@ -17,7 +18,10 @@ func NewDefaultMiddlewares(ctx context.Context, timeout time.Duration) []telegra
 	return []telegram.Middleware{
 		recovery.New(ctx, func() backoff.BackOff { return newBackoff(timeout) }),
 		retry.New(config.C().Telegram.RpcRetry),
-		floodwait.NewSimpleWaiter(),
+		// MaxAutoFloodWait keeps sleeps inside the download stall watchdog's
+		// window: longer waits are refused up front instead of being parked
+		// past the watchdog and killed as "stalled".
+		floodwait.NewSimpleWaiter().WithMaxWait(dlutil.MaxAutoFloodWait),
 	}
 }
 

@@ -14,6 +14,15 @@ import (
 // reconnect that would have succeeded is not cut short.
 const DownloadStallTimeout = 15 * time.Minute
 
+// MaxAutoFloodWait caps the floodwait middleware's automatic sleep: a
+// FLOOD_WAIT above it parks an RPC past DownloadStallTimeout with zero
+// byte progress, so the stall watchdog would cancel a wait that would
+// have completed and mislabel the task as stalled. The middleware refuses
+// such waits up front (clear retryable error naming the wait); waits up
+// to this cap still sleep and resume transparently. One minute of
+// headroom keeps a max-length sleep strictly inside the stall window.
+const MaxAutoFloodWait = DownloadStallTimeout - time.Minute
+
 // StallWatchdog cancels its context when no progress has been observed for
 // the whole stall timeout. Total download time is unlimited as long as bytes
 // keep flowing, which keeps large files on slow links working while silent
@@ -93,11 +102,14 @@ func (w *StallWatchdog) Close() {
 // a silent stall, a flood-wait crawl — and falls back to wrapping the raw
 // error.
 func DownloadFailure(err error, wdog *StallWatchdog, meter *FloodWaitMeter) error {
-	if wdog.Stalled() {
-		return fmt.Errorf("download stalled: no data received for %s", DownloadStallTimeout)
-	}
+	// Meter first: when both guards fired, accumulated FLOOD_WAIT time is
+	// the more specific cause — the watchdog only fires alongside it
+	// because absorbed waits also starve byte progress.
 	if meter.Crawled() {
 		return CrawlError(meter.Absorbed())
+	}
+	if wdog.Stalled() {
+		return fmt.Errorf("download stalled: no data received for %s", DownloadStallTimeout)
 	}
 	return fmt.Errorf("failed to download file: %w", err)
 }

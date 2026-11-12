@@ -80,3 +80,33 @@ func TestSanitizeRelDirPathNeverTraverses(t *testing.T) {
 		}
 	}
 }
+
+// Win32-hostile segments must not survive: trailing dots/spaces that
+// Windows would strip on disk (diverging the stored path from the created
+// one) are trimmed, and reserved device stems are shifted, mirroring the
+// filename sanitizer.
+func TestSanitizeRelDirPathWin32HostileSegments(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "trailing dot trimmed", in: "a/foo./b", want: "a/foo/b"},
+		{name: "trailing space trimmed", in: "a/bar /b", want: "a/bar/b"},
+		{name: "all-dot segment dropped", in: "a/.../b", want: "a/b"},
+		{name: "reserved stem shifted", in: "con/reports", want: "con_/reports"},
+		{name: "reserved stem with ext shifted", in: "nul.txt/x", want: "nul_.txt/x"},
+		{name: "ordinary name untouched", in: "console/reports", want: "console/reports"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := SanitizeRelDirPath(tt.in)
+			if err != nil {
+				t.Fatalf("SanitizeRelDirPath(%q) error: %v", tt.in, err)
+			}
+			if got != tt.want {
+				t.Fatalf("SanitizeRelDirPath(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}

@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -28,6 +30,15 @@ const (
 	watchCatchUpPageSize = 100
 	watchCatchUpBudget   = 10 * time.Minute
 	watchCatchUpPacing   = time.Second
+
+	// Boot-run ceilings across ALL watches: without them, N watches backfill
+	// up to N*watchCatchUpCap files back-to-back at boot, flooding the task
+	// queue and the rate limiter at once. The file cap bounds the total
+	// enqueue volume (a watch may overshoot it by at most its own per-run
+	// cap; the remainder waits for the next boot, cursors untouched); the
+	// wall-clock cap bounds how long boot may spend catching up.
+	watchCatchUpBootFileCap = watchCatchUpCap
+	watchCatchUpBootWallCap = 30 * time.Minute
 )
 
 // watchCatchUpCounters observes intake outcomes during one catch-up run.
@@ -141,8 +152,18 @@ func RunWatchCatchUp(botCtx *ext.Context, fetchResolve func() *ext.Context) {
 		return
 	}
 	logger.Infof("Watch catch-up: starting for %d watch(es)", len(watches))
+	bootStart := time.Now()
+	enqueuedTotal := int64(0)
 	for _, watch := range watches {
+		if enqueuedTotal >= watchCatchUpBootFileCap || time.Since(bootStart) >= watchCatchUpBootWallCap {
+			// Boot-run budget spent: watches not yet visited keep their
+			// cursors and are picked up on the next boot.
+			logger.Warnf("Watch catch-up: boot budget reached (%d files enqueued, %s elapsed); %d watch(es) deferred to the next boot",
+				enqueuedTotal, time.Since(bootStart).Round(time.Second), len(watches)-slices.Index(watches, watch))
+			break
+		}
 		runWatchCatchUpOne(botCtx, uctx, watch)
+		enqueuedTotal += watchLastEnqueueCount.Load()
 		// Pace the sequential watch loop: at least 1s between getHistory
 		// RPCs across watches.
 		time.Sleep(watchCatchUpPacing)
@@ -150,7 +171,23 @@ func RunWatchCatchUp(botCtx *ext.Context, fetchResolve func() *ext.Context) {
 	logger.Info("Watch catch-up: finished")
 }
 
+// watchLastEnqueueCount publishes the enqueue total of the most recent
+// runWatchCatchUpOne call to the boot loop's budget accounting (the loop is
+// strictly sequential, so a single variable is race-free).
+var watchLastEnqueueCount atomic.Int64
+
+// watchRunEnqueueCount points at the counters of the in-flight per-watch
+// run; the deferred publish in runWatchCatchUpOne reads it. Always non-nil
+// when the deferred read runs.
+var watchRunEnqueueCount *watchCatchUpCounters
+
 func runWatchCatchUpOne(botCtx *ext.Context, uctx *ext.Context, watch *database.WatchChat) {
+	watchRunEnqueueCount = nil
+	defer func() {
+		if watchRunEnqueueCount != nil {
+			watchLastEnqueueCount.Store(int64(watchRunEnqueueCount.enqueueCount()))
+		}
+	}()
 	logger := log.FromContext(uctx)
 	peer := telegram.ResolveInputPeer(uctx, watch.ChatID)
 	if peer == nil {
@@ -189,6 +226,7 @@ func runWatchCatchUpOne(botCtx *ext.Context, uctx *ext.Context, watch *database.
 	defer cancel()
 
 	counters := &watchCatchUpCounters{}
+	watchRunEnqueueCount = counters
 	fetch := func(offsetID int) ([]*tg.Message, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err

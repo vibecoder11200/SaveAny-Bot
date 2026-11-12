@@ -44,12 +44,15 @@ None found by any lens.
 
 ## Medium
 
-- **M1 (FailureMode) live cursor advances before enqueue** — ACCEPTED.
-  Rationale: locked, fork-proven semantics (live observation = handled;
-  required for busy-channel correctness); the loss window needs a
-  non-queue enqueue failure after the advance (rare, logged at Error);
-  the common shutdown case is protected by H3's fix (record kept + resume
-  requeue). Changing it would re-litigate the Phase 7 spec.
+- **M1 (FailureMode) live cursor advances before enqueue** — FIXED
+  (ak-fix round, user-directed): the live advance is gated on per-event
+  RESOLUTION — enqueued, dedup-skipped, or deterministically filtered
+  (mediatype/user-scope rejects, no-default-storage skips all count as
+  resolved, preserving busy-channel correctness). An enqueue failure or a
+  user-fetch error leaves the message below the cursor and the next boot's
+  catch-up re-fetches it. Buffered album members resolve at flush (which
+  already advanced per flushed group) — a failed album flush now stays
+  re-fetchable too, which the old pre-advance semantics lost forever.
 - **M2 (FailureMode+Assumption) live×catch-up TOCTOU on singles** — FIXED:
   creation-time file-id dedup added to processWatchSingle (same layer the
   album path already applies; fail-open). Residual window (hash-less
@@ -89,17 +92,32 @@ None found by any lens.
 
 - L1 stream task missing MarkTaskElementDone (crash between upload and
   record update re-runs the task) — FIXED.
-- L2 FLOOD_WAIT > 15 min misclassified as stall — ACCEPTED (retryable;
-  classification-only).
-- L3 Win32-hostile dir segments (.. , trailing dots) accepted by sanitizer,
-  no escape (verified empirically) — ACCEPTED (availability/UX only).
-- L4 unbounded watch fan-out at boot — ACCEPTED (single-user deployments;
-  budget-bounded per watch).
+- L2 FLOOD_WAIT > 15 min misclassified as stall — FIXED (ak-fix round):
+  DownloadFailure checks the meter BEFORE the watchdog (specific beats
+  generic), and the floodwait middleware now caps auto-sleep at
+  MaxAutoFloodWait (stall window - 1m): longer waits are refused up front
+  with the true cause instead of being parked past the watchdog and
+  killed as "stalled". Waits up to the cap still sleep and resume
+  transparently.
+- L3 Win32-hostile dir segments — FIXED (ak-fix round): SanitizeRelDirPath
+  trims trailing dots/spaces per segment (Windows resolves "foo." to
+  "foo" on disk, diverging the stored path) and shifts reserved device
+  stems ("con" to "con_"), the same rules pkg/tfile applies to filenames;
+  ".." was already dropped.
+- L4 unbounded watch fan-out at boot — FIXED (ak-fix round): the
+  sequential per-watch loop now enforces boot-run ceilings (500 files
+  total across watches, 30 min wall clock), checked between watches;
+  unvisited watches keep their cursors and defer to the next boot.
 - L5 pico runs as root — FIXED: numeric USER in Dockerfile.pico.
 - L6 fake double-append inflates Fetched against the unpaginated fake —
   FIXED with M7.
-- L7 ext.Context seed collision (same-tick copies) — ACCEPTED (tiny
-  Windows-nanotime window; per-copy rand kept for goroutine safety).
+- L7 ext.Context seed collision — FIXED (ak-fix round, upstream-external
+  constraint honored): mygotg seeds per-copy rand from the wall clock and
+  the seed feeds Telegram RandomID send nonces, so same-tick copies that
+  both send collide and the second send is silently dropped. newExtContext
+  serializes copies and waits for the clock to advance past the previous
+  copy; both creation sites (middleware child, watch notify) route through
+  it.
 - L8 importer storageIDs case-collision last-wins — FIXED: warn on
   case-colliding names.
 - L9 Windows reserved device names (CON, NUL…) unhandled by
@@ -143,3 +161,17 @@ Verdict: 0 Critical, 0 High. Notes (accepted, documented):
   bypasses the batch task's size pre-filter, a skipped member is logged at
   the storage layer while the task reports overall success. The batch task
   pre-filter (batchtfile execute.go) prevents this on all real paths.
+
+## ak-fix round (user-directed: fix all remaining issues)
+
+Scope: every ACCEPTED finding that was a real defect and fixable without
+reversing a locked product decision. M1, L2, L3, L4, L7 fixed as above.
+Still accepted, NOT defects or user-reserved: L13 (plans/ artifacts are the
+coordination surface; pruning stays a user choice), L2's residual
+double-wait edge (inherent to watchdog-vs-waiter construction, both labels
+now honest), the gofmt drift in untouched upstream files (app/, cmd/:
+formatting them would add pure-noise hunks to the fork diff),
+go-enum regeneration provenance headers (tool stamps its own build info;
+generated code byte-identical, artifacts committed), ncruces Windows
+absolute-path defect (upstream, skipf documented), the two locked resume
+regressions (plan decision: upstream native resume wins).
