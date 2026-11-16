@@ -1,8 +1,12 @@
 package handlers
 
 import (
+	"context"
 	"math"
 	"sync"
+
+	"github.com/krau/SaveAny-Bot/database"
+	"github.com/krau/SaveAny-Bot/pkg/tfile"
 )
 
 // watchPendingSet tracks, per watch, the message IDs that were observed
@@ -65,9 +69,7 @@ func (p *watchPendingSet) ceiling() int64 {
 	defer p.mu.Unlock()
 	lowest := int64(math.MaxInt64)
 	for id := range p.ids {
-		if id < lowest {
-			lowest = id
-		}
+		lowest = min(lowest, id)
 	}
 	return lowest - 1
 }
@@ -76,4 +78,38 @@ func (p *watchPendingSet) ceiling() int64 {
 // pending unresolved message of that watch.
 func clampWatchCursor(watchID uint, id int64) int64 {
 	return min(id, watchPendingFor(watchID).ceiling())
+}
+
+// advanceWatchCursor moves the watch cursor to msgID, clamped below the
+// smallest pending unresolved message of that watch. The error is returned,
+// not logged: the live intake warns, the flush paths rely on the next
+// boot's re-fetch instead.
+func advanceWatchCursor(ctx context.Context, watchID uint, msgID int64) error {
+	return database.TouchWatchCursor(ctx, watchID, clampWatchCursor(watchID, msgID))
+}
+
+// resolveWatchFile records one single's resolved outcome: unpin its message
+// from the pending set and advance the cursor past it (clamped below
+// anything still pending for the watch).
+func resolveWatchFile(ctx context.Context, watch *database.WatchChat, file tfile.TGFileMessage) {
+	if file.Message() == nil {
+		return
+	}
+	watchPendingFor(watch.ID).remove(int64(file.Message().ID))
+	_ = advanceWatchCursor(ctx, watch.ID, int64(file.Message().ID))
+}
+
+// resolveWatchMessages records a flushed album's resolved outcome: unpin
+// every member from the pending set and return the largest message ID —
+// the group's cursor-advance candidate.
+func resolveWatchMessages(watchID uint, files []tfile.TGFileMessage) int64 {
+	ids := make([]int64, 0, len(files))
+	var maxID int64
+	for _, f := range files {
+		id := int64(f.Message().ID)
+		ids = append(ids, id)
+		maxID = max(maxID, id)
+	}
+	watchPendingFor(watchID).remove(ids...)
+	return maxID
 }

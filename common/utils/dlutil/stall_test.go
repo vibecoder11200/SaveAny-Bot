@@ -84,13 +84,11 @@ func TestDownloadFailure_MeterBeatsWatchdog(t *testing.T) {
 	meter := newFloodWaitMeter(mctx, mcancel, 50*time.Millisecond, time.Nanosecond)
 	defer meter.Close()
 	// Absorb enough slow-RPC time to trip the meter at its window tick
-	// (maxSlow = 25ms) while the 10ms watchdog fires in parallel.
-	meter.Observe(5*time.Millisecond, nil)
-	meter.Observe(5*time.Millisecond, nil)
-	meter.Observe(5*time.Millisecond, nil)
-	meter.Observe(5*time.Millisecond, nil)
-	meter.Observe(5*time.Millisecond, nil)
-	meter.Observe(5*time.Millisecond, nil)
+	// (6 x 5ms = 30ms >= maxSlow 25ms) while the 10ms watchdog fires
+	// in parallel.
+	for i := 0; i < 6; i++ {
+		meter.Observe(5*time.Millisecond, nil)
+	}
 	time.Sleep(120 * time.Millisecond) // let both fire
 	err := DownloadFailure(context.Canceled, wdog, meter)
 	if !strings.Contains(err.Error(), "flood-wait absorbed") {

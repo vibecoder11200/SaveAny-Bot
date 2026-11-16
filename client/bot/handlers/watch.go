@@ -375,6 +375,14 @@ func groupFlushDelay(timeout time.Duration, deadline time.Time) time.Duration {
 	return timeout
 }
 
+// ensureUserMap lazily creates the per-chat inner map of one of the
+// handler's parallel chat → (user → …) maps.
+func ensureUserMap[V any](outer map[int64]map[uint]V, chatID int64) {
+	if outer[chatID] == nil {
+		outer[chatID] = make(map[uint]V)
+	}
+}
+
 func (w *watchMediaGroupHandler) addFile(chatID int64, userID uint, file tfile.TGFileMessage, timeout time.Duration, callback func([]tfile.TGFileMessage)) {
 	if w.addFileLocked(chatID, userID, file, timeout, callback) {
 		// Cap reached: flush synchronously, outside the lock (take()
@@ -390,18 +398,10 @@ func (w *watchMediaGroupHandler) addFileLocked(chatID int64, userID uint, file t
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.groups[chatID] == nil {
-		w.groups[chatID] = make(map[uint][]tfile.TGFileMessage)
-	}
-	if w.timers[chatID] == nil {
-		w.timers[chatID] = make(map[uint]*time.Timer)
-	}
-	if w.callbacks[chatID] == nil {
-		w.callbacks[chatID] = make(map[uint]func([]tfile.TGFileMessage))
-	}
-	if w.deadlines[chatID] == nil {
-		w.deadlines[chatID] = make(map[uint]time.Time)
-	}
+	ensureUserMap(w.groups, chatID)
+	ensureUserMap(w.timers, chatID)
+	ensureUserMap(w.callbacks, chatID)
+	ensureUserMap(w.deadlines, chatID)
 
 	// The live listener and the boot catch-up feed the same buffer
 	// concurrently; a message buffered twice would end up twice inside ONE
@@ -451,9 +451,7 @@ func (w *watchMediaGroupHandler) take(chatID int64, userID uint) ([]tfile.TGFile
 	callback := w.callbacks[chatID][userID]
 	delete(w.groups[chatID], userID)
 	delete(w.callbacks[chatID], userID)
-	if w.deadlines[chatID] != nil {
-		delete(w.deadlines[chatID], userID)
-	}
+	delete(w.deadlines[chatID], userID)
 	if timer, exists := w.timers[chatID][userID]; exists {
 		timer.Stop()
 		delete(w.timers[chatID], userID)
@@ -646,7 +644,7 @@ func processMediaEventForWatch(botCtx *ext.Context, event userclient.MediaMessag
 		if resolved {
 			watchPendingFor(watch.ID).remove(int64(event.MessageID))
 			if opts.live {
-				if err := database.TouchWatchCursor(ctx, watch.ID, clampWatchCursor(watch.ID, int64(event.MessageID))); err != nil {
+				if err := advanceWatchCursor(ctx, watch.ID, int64(event.MessageID)); err != nil {
 					logger.Warnf("Failed to advance watch cursor for chat %d: %v", watch.ChatID, err)
 				}
 			}
@@ -873,10 +871,7 @@ func processWatchSingle(ctx *ext.Context, botCtx *ext.Context, watch *database.W
 	// outcome the cursor may advance past.
 	if watchConflictStrategy(user, opts.strategyPin) != tcbdata.ConflictStrategyOverwrite &&
 		shortcut.DedupSkipAtCreation(ctx, user.ID, stor, file) {
-		if file.Message() != nil {
-			watchPendingFor(watch.ID).remove(int64(file.Message().ID))
-			_ = database.TouchWatchCursor(ctx, watch.ID, clampWatchCursor(watch.ID, int64(file.Message().ID)))
-		}
+		resolveWatchFile(ctx, watch, file)
 		if opts.counters != nil {
 			opts.counters.singles.Add(1)
 		}
@@ -894,10 +889,7 @@ func processWatchSingle(ctx *ext.Context, botCtx *ext.Context, watch *database.W
 		logger.Errorf("add task failed: %s", err)
 		return false
 	}
-	if file.Message() != nil {
-		watchPendingFor(watch.ID).remove(int64(file.Message().ID))
-		_ = database.TouchWatchCursor(ctx, watch.ID, clampWatchCursor(watch.ID, int64(file.Message().ID)))
-	}
+	resolveWatchFile(ctx, watch, file)
 	if opts.counters != nil {
 		opts.counters.singles.Add(1)
 	}
@@ -947,11 +939,7 @@ func processWatchMediaGroup(ctx *ext.Context, botCtx *ext.Context, watch *databa
 			}
 		}
 		// Deterministically dropped: resolved, so unpin every member.
-		memberIDs := make([]int64, 0, len(files))
-		for _, f := range files {
-			memberIDs = append(memberIDs, int64(f.Message().ID))
-		}
-		watchPendingFor(watch.ID).remove(memberIDs...)
+		resolveWatchMessages(watch.ID, files)
 		return
 	}
 	for _, groupID := range groupIDs {
@@ -962,9 +950,7 @@ func processWatchMediaGroup(ctx *ext.Context, botCtx *ext.Context, watch *databa
 			if opts.counters != nil {
 				opts.counters.albumResolved.Add(int64(len(groupFiles)))
 			}
-			for _, gf := range groupFiles {
-				watchPendingFor(watch.ID).remove(int64(gf.Message().ID))
-			}
+			resolveWatchMessages(watch.ID, groupFiles)
 			continue
 		}
 		stor, dirPath, err := resolveWatchFlushTarget(ctx, botCtx, watch, user, groupFiles[0])
@@ -1058,19 +1044,11 @@ func processWatchMediaGroup(ctx *ext.Context, botCtx *ext.Context, watch *databa
 			if opts.counters != nil {
 				opts.counters.albumResolved.Add(int64(len(groupFiles)))
 			}
-			var maxMsgID int64
-			memberIDs := make([]int64, 0, len(groupFiles))
-			for _, gf := range groupFiles {
-				memberIDs = append(memberIDs, int64(gf.Message().ID))
-				if id := int64(gf.Message().ID); id > maxMsgID {
-					maxMsgID = id
-				}
-			}
 			// Every member resolved (saved, skipped or filtered): unpin
 			// them, then advance — clamped below anything else still
 			// pending for this watch.
-			watchPendingFor(watch.ID).remove(memberIDs...)
-			_ = database.TouchWatchCursor(ctx, watch.ID, clampWatchCursor(watch.ID, maxMsgID))
+			maxMsgID := resolveWatchMessages(watch.ID, groupFiles)
+			_ = advanceWatchCursor(ctx, watch.ID, maxMsgID)
 		}
 	}
 }

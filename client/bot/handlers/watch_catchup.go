@@ -300,7 +300,7 @@ func runWatchCatchUpOne(botCtx *ext.Context, uctx *ext.Context, watch *database.
 	// message blocks the whole advance (conservative, still progress-safe:
 	// failures are transient and logged).
 	if maxSeenID > 0 && counters.singlesFed.Load() == counters.singles.Load() && counters.albumResolved.Load() == groupFilesFed {
-		_ = database.TouchWatchCursor(uctx, watch.ID, clampWatchCursor(watch.ID, maxSeenID))
+		_ = advanceWatchCursor(uctx, watch.ID, maxSeenID)
 	}
 
 	if fetched == 0 {

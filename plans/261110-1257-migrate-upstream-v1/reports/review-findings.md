@@ -234,3 +234,14 @@ finding adjudicated; dispositions below.
   floodwaits > 14m fast-fail instead of sleeping (benign, documented),
   interior U+00A0/U+3000 in dir segments (Win32 does not strip them — no
   divergence), pending set fails open beyond 4096 entries per watch.
+
+## Simplifier-team pass (3 agents, disjoint ownership, on 10c72b5+af2caf3)
+
+Behavior-preserving; combined tree re-verified green (build, vet, race
+units, e2e). Notable: watch cluster consolidated the 4x clamp+Touch pairs
+(advanceWatchCursor), the 2x single-resolution blocks (resolveWatchFile)
+and 3x album unpin loops (resolveWatchMessages) into watch_pending.go;
+album buffer map-init became one generic ensureUserMap; sanitizer loop
+switch became a guard clause; ShiftReservedDeviceStem uses strings.Cut for
+the stem (one agent mid-flight bug - Cut's `after` dropping the separator
+dot - was caught by the pinned pkg/tfile tests before landing).

@@ -105,10 +105,7 @@ var winReservedDevices = map[string]bool{
 // reserved set by appending an underscore: Windows resolves such stems to
 // the device itself even with an extension (CON.txt opens the console).
 func ShiftReservedDeviceStem(name string) string {
-	stem := name
-	if idx := strings.IndexByte(stem, '.'); idx >= 0 {
-		stem = stem[:idx]
-	}
+	stem, _, _ := strings.Cut(name, ".")
 	if winReservedDevices[strings.ToUpper(stem)] {
 		return stem + "_" + name[len(stem):]
 	}

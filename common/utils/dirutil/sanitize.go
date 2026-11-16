@@ -24,12 +24,12 @@ var ErrRelDirPathAbsolute = errors.New("dir path must be relative to the storage
 // duplicate separators, keeps interior structure (a/b/c stays a/b/c), and
 // caps the length. An empty input is valid and means the storage root.
 // Each segment is additionally Win32-hardened with the same rules
-// pkg/tfile applies to filenames: invalid characters (colon, wildcard and
-// redirection chars, control characters) are replaced with underscores,
-// trailing dots/spaces are trimmed (Windows resolves "foo." to "foo" on
-// disk, which would silently diverge the stored path from the created
-// one), and reserved device stems are shifted ("con" to "con_": such names
-// fail to create on Windows).
+// pkg/tfile applies to filenames: invalid characters (colon, wildcard,
+// redirection, control) become underscores; trailing dots, spaces, and
+// underscores are trimmed (Windows resolves "foo." to "foo" on disk,
+// silently diverging the stored path from the created one); and reserved
+// device stems are shifted ("con" to "con_": such names fail to create on
+// Windows).
 func SanitizeRelDirPath(in string) (string, error) {
 	if len(in) > MaxRelDirPathLen {
 		return "", errors.New("dir path too long (max 512 characters)")
@@ -51,18 +51,17 @@ func SanitizeRelDirPath(in string) (string, error) {
 	normalized := strings.ReplaceAll(trimmed, "\\", "/")
 	parts := make([]string, 0, strings.Count(normalized, "/")+1)
 	for _, seg := range strings.Split(normalized, "/") {
-		switch seg {
-		case "", ".":
+		if seg == "" || seg == "." || seg == ".." {
+			// Dropped, never resolved: empty segments and "." carry no
+			// location, and ".." must not survive as a traversal prefix
+			// ("a/../.." can never climb out of the root).
 			continue
-		case "..":
-			// Dropped, not resolved: "a/../.." must never climb out, and a
-			// leading ".." must not survive as a traversal prefix.
-			continue
-		default:
-			seg = fsutil.ShiftReservedDeviceStem(fsutil.NormalizePathname(seg))
-			if seg != "" {
-				parts = append(parts, seg)
-			}
+		}
+		// Hardening can empty a segment (e.g. one made only of dots or
+		// spaces), so keep only segments that survive it.
+		seg = fsutil.ShiftReservedDeviceStem(fsutil.NormalizePathname(seg))
+		if seg != "" {
+			parts = append(parts, seg)
 		}
 	}
 	if len(parts) == 0 {
