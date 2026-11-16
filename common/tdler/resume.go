@@ -365,6 +365,15 @@ func fetchChunk(
 			req.Location = newLoc
 			continue
 		}
+		if d, ok := tgerr.AsFloodWait(err); ok && d > dlutil.MaxAutoFloodWait {
+			// The floodwait middleware refused to sleep a wait this long
+			// (it would outlast the download stall watchdog, and the task
+			// would die mislabeled as stalled). Sleeping it HERE would
+			// recreate exactly that: fail fast with the honest cause
+			// instead — the task-level retry decides what happens next.
+			return nil, fmt.Errorf("get chunk at %d: flood wait %s exceeds the auto-wait cap %s: %w",
+				offset, d, dlutil.MaxAutoFloodWait, err)
+		}
 		if flood, ferr := tgerr.FloodWait(ctx, err); ferr != nil {
 			if flood {
 				// FloodWait already slept; retry.

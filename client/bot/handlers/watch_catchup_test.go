@@ -365,11 +365,12 @@ func TestWatchMediaGroupBufferInterleavedWriters(t *testing.T) {
 	}
 }
 
-// Live intake advances the cursor on EVERY observed media event, before any
-// filter — here the user has no default storage, so nothing is ever
-// enqueued, yet the cursor must move. The same event re-fed as backfill must
-// NOT move it: backfill advances only after a durable enqueue.
-func TestWatchIntakeLiveCursorAdvancesPreFilter(t *testing.T) {
+// Live intake advances the cursor only on RESOLVED events. A deterministic
+// skip counts as resolved — here the user has no default storage, so
+// nothing is ever enqueued, yet the cursor must move (busy-channel
+// correctness). The same event re-fed as backfill must NOT move it:
+// backfill advances only after a durable enqueue.
+func TestWatchIntakeLiveCursorAdvancesOnResolvedSkip(t *testing.T) {
 	setupWatchDB(t)
 	ctx := context.Background()
 	user := database.User{ChatID: 1}
@@ -390,7 +391,7 @@ func TestWatchIntakeLiveCursorAdvancesPreFilter(t *testing.T) {
 	processMediaEventForWatch(botCtx, event, &watch, watchIntakeOpts{live: true})
 	cur, ok, err := database.CurrentWatchCursor(ctx, watch.ID)
 	if err != nil || !ok || cur != 777 {
-		t.Fatalf("cursor = %d ok=%v err=%v, want 777/true/nil (live advances before filters)", cur, ok, err)
+		t.Fatalf("cursor = %d ok=%v err=%v, want 777/true/nil (deterministic skip resolves)", cur, ok, err)
 	}
 	event.MessageID = 778
 	event.File = groupFileWithID(t, "", "intake2.jpg", 0, 778)

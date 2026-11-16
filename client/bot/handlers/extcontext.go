@@ -10,28 +10,38 @@ import (
 )
 
 // mygotg's ext.NewContext seeds its per-copy rand source from
-// time.Now().UnixNano(). Two copies created in the same clock tick share
-// the seed — and the stream feeds Telegram's RandomID send nonces, so a
-// pair of same-seed copies that both send a message collides and Telegram
-// silently drops the second send as a duplicate. Windows clock granularity
-// makes same-tick pairs realistic under the boot catch-up burst, which
-// creates one context per task notification in a tight loop.
+// time.Now().UnixNano() (a WALL-clock value — note that time.Time.Equal
+// compares monotonic readings instead, so it cannot guard this). The stream
+// feeds Telegram's RandomID send nonces, so two copies sharing a seed that
+// both send a message collide and Telegram silently drops the second send
+// as a duplicate. Windows clock granularity makes same-tick pairs realistic
+// under the boot catch-up burst, which creates one context per task
+// notification in a tight loop.
 //
-// newExtContext serializes context copies and waits for the clock to
-// advance past the previous copy's creation instant, so every copy this
-// process builds seeds differently. Copies are rare (one per update or
-// task), so the mutex and the rare sub-millisecond wait cost nothing.
+// newExtContext serializes context copies and makes every copy's seed
+// strictly greater than the previous one: it records the wall-clock reading
+// AFTER the constructor returns (the seed was read at or below that
+// reading) and the next copy waits until the clock has moved past it. The
+// wait is bounded — after maxSeedWaitTicks attempts it proceeds (a
+// collision is then possible but a frozen clock must not hold the mutex
+// forever). Copies are rare (one per update or task), so the mutex and the
+// sub-millisecond wait cost nothing.
 var (
-	extCopyMu       sync.Mutex
-	lastExtCopyTime time.Time
+	extCopyMu     sync.Mutex
+	lastSeedAfter int64
 )
+
+const maxSeedWaitTicks = 10000
 
 func newExtContext(base context.Context, bot *ext.Context, entities *tg.Entities) *ext.Context {
 	extCopyMu.Lock()
 	defer extCopyMu.Unlock()
-	for time.Now().Equal(lastExtCopyTime) {
+	for ticks := 0; time.Now().UnixNano() <= lastSeedAfter && ticks < maxSeedWaitTicks; ticks++ {
 		time.Sleep(100 * time.Microsecond)
 	}
-	lastExtCopyTime = time.Now()
-	return ext.NewContext(base, bot.Raw, bot.PeerStorage, bot.Self, bot.Sender, entities, false)
+	ctx := ext.NewContext(base, bot.Raw, bot.PeerStorage, bot.Self, bot.Sender, entities, false)
+	// Record after the constructor: the seed it read is at or below this
+	// reading, so any strictly later copy seeds strictly higher.
+	lastSeedAfter = time.Now().UnixNano()
+	return ctx
 }

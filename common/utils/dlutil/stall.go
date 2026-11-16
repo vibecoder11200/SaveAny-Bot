@@ -109,6 +109,12 @@ func DownloadFailure(err error, wdog *StallWatchdog, meter *FloodWaitMeter) erro
 		return CrawlError(meter.Absorbed())
 	}
 	if wdog.Stalled() {
+		if absorbed := meter.SlowAbsorbed(); absorbed > 0 {
+			// The stall fired while flood-wait time was being absorbed
+			// (e.g. consecutive sub-cap waits with no progress between):
+			// keep the stall label, name the likely cause.
+			return fmt.Errorf("download stalled: no data received for %s (flood-wait absorbed %s in window)", DownloadStallTimeout, absorbed.Round(time.Second))
+		}
 		return fmt.Errorf("download stalled: no data received for %s", DownloadStallTimeout)
 	}
 	return fmt.Errorf("failed to download file: %w", err)

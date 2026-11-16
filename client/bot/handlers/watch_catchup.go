@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"slices"
 	"sync/atomic"
 	"time"
 
@@ -48,11 +47,11 @@ const (
 // deterministically filtered — must stay re-fetchable. The enqueue fields
 // (singles, albumFiles, albumTasks) additionally keep the summary honest.
 type watchCatchUpCounters struct {
-	singlesFed    int
-	singles       int
-	albumResolved int
-	albumFiles    int
-	albumTasks    int
+	singlesFed    atomic.Int64
+	singles       atomic.Int64
+	albumResolved atomic.Int64
+	albumFiles    atomic.Int64
+	albumTasks    atomic.Int64
 }
 
 // watchCatchUpResult summarizes one watch's backfill run.
@@ -66,7 +65,7 @@ type watchCatchUpResult struct {
 // enqueueCount reports how many files were durably enqueued (singles tasks
 // plus album members inside batch tasks).
 func (c *watchCatchUpCounters) enqueueCount() int {
-	return c.singles + c.albumFiles
+	return int(c.singles.Load() + c.albumFiles.Load())
 }
 
 // historyFetchPage returns one raw getHistory batch: up to
@@ -153,17 +152,22 @@ func RunWatchCatchUp(botCtx *ext.Context, fetchResolve func() *ext.Context) {
 	}
 	logger.Infof("Watch catch-up: starting for %d watch(es)", len(watches))
 	bootStart := time.Now()
+	// Rotate the start index per boot-hour: ListAllWatchChats order is
+	// DB-dependent but stable, so without rotation a head watch with a
+	// sustained full backlog would consume the whole budget every boot and
+	// starve the watches behind it.
+	offset := int(time.Now().Unix()/3600) % len(watches)
 	enqueuedTotal := int64(0)
-	for _, watch := range watches {
+	for i := 0; i < len(watches); i++ {
+		watch := watches[(i+offset)%len(watches)]
 		if enqueuedTotal >= watchCatchUpBootFileCap || time.Since(bootStart) >= watchCatchUpBootWallCap {
 			// Boot-run budget spent: watches not yet visited keep their
 			// cursors and are picked up on the next boot.
-			logger.Warnf("Watch catch-up: boot budget reached (%d files enqueued, %s elapsed); %d watch(es) deferred to the next boot",
-				enqueuedTotal, time.Since(bootStart).Round(time.Second), len(watches)-slices.Index(watches, watch))
+			logger.Warnf("Watch catch-up: boot budget reached (%d files resolved (enqueued or dedup-skipped), %s elapsed); %d watch(es) deferred to the next boot",
+				enqueuedTotal, time.Since(bootStart).Round(time.Second), len(watches)-i)
 			break
 		}
-		runWatchCatchUpOne(botCtx, uctx, watch)
-		enqueuedTotal += watchLastEnqueueCount.Load()
+		enqueuedTotal += int64(runWatchCatchUpOne(botCtx, uctx, watch))
 		// Pace the sequential watch loop: at least 1s between getHistory
 		// RPCs across watches.
 		time.Sleep(watchCatchUpPacing)
@@ -171,23 +175,13 @@ func RunWatchCatchUp(botCtx *ext.Context, fetchResolve func() *ext.Context) {
 	logger.Info("Watch catch-up: finished")
 }
 
-// watchLastEnqueueCount publishes the enqueue total of the most recent
-// runWatchCatchUpOne call to the boot loop's budget accounting (the loop is
-// strictly sequential, so a single variable is race-free).
-var watchLastEnqueueCount atomic.Int64
-
-// watchRunEnqueueCount points at the counters of the in-flight per-watch
-// run; the deferred publish in runWatchCatchUpOne reads it. Always non-nil
-// when the deferred read runs.
-var watchRunEnqueueCount *watchCatchUpCounters
-
-func runWatchCatchUpOne(botCtx *ext.Context, uctx *ext.Context, watch *database.WatchChat) {
-	watchRunEnqueueCount = nil
-	defer func() {
-		if watchRunEnqueueCount != nil {
-			watchLastEnqueueCount.Store(int64(watchRunEnqueueCount.enqueueCount()))
-		}
-	}()
+// runWatchCatchUpOne backfills one watch and returns how many files it
+// durably resolved (enqueued or dedup-skipped): the boot budget counts
+// resolved intake volume, not just task creation, so a run of pure
+// dedup-skips still consumes budget honestly.
+func runWatchCatchUpOne(botCtx *ext.Context, uctx *ext.Context, watch *database.WatchChat) (enqueued int) {
+	counters := &watchCatchUpCounters{}
+	defer func() { enqueued = counters.enqueueCount() }()
 	logger := log.FromContext(uctx)
 	peer := telegram.ResolveInputPeer(uctx, watch.ChatID)
 	if peer == nil {
@@ -225,8 +219,6 @@ func runWatchCatchUpOne(botCtx *ext.Context, uctx *ext.Context, watch *database.
 	ctx, cancel := context.WithTimeout(uctx, watchCatchUpBudget)
 	defer cancel()
 
-	counters := &watchCatchUpCounters{}
-	watchRunEnqueueCount = counters
 	fetch := func(offsetID int) ([]*tg.Message, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -307,15 +299,16 @@ func runWatchCatchUpOne(botCtx *ext.Context, uctx *ext.Context, watch *database.
 	// re-fetchable, and single/album IDs interleave, so any unresolved
 	// message blocks the whole advance (conservative, still progress-safe:
 	// failures are transient and logged).
-	if maxSeenID > 0 && counters.singlesFed == counters.singles && int64(counters.albumResolved) == groupFilesFed {
-		_ = database.TouchWatchCursor(uctx, watch.ID, maxSeenID)
+	if maxSeenID > 0 && counters.singlesFed.Load() == counters.singles.Load() && counters.albumResolved.Load() == groupFilesFed {
+		_ = database.TouchWatchCursor(uctx, watch.ID, clampWatchCursor(watch.ID, maxSeenID))
 	}
 
 	if fetched == 0 {
 		// Silent when nothing new — no summary noise on quiet restarts.
 		return
 	}
-	sendWatchCatchUpSummary(botCtx, uctx, watch, fetched, counters.enqueueCount(), counters.albumTasks, capped)
+	sendWatchCatchUpSummary(botCtx, uctx, watch, fetched, counters.enqueueCount(), int(counters.albumTasks.Load()), capped)
+	return
 }
 
 // fetchNewestMessageID returns the newest message ID of a chat (0 when the

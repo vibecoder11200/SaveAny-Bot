@@ -175,3 +175,62 @@ go-enum regeneration provenance headers (tool stamps its own build info;
 generated code byte-identical, artifacts committed), ncruces Windows
 absolute-path defect (upstream, skipf documented), the two locked resume
 regressions (plan decision: upstream native resume wins).
+
+## Reviewer-team round (3 lenses on 10c72b5, fixes applied)
+
+Three-lens re-review of the ak-fix round (Security Adversary, Failure Mode
+Analyst, Contract & Correctness): **1 High, 7 Medium, 8 Low** — every
+finding adjudicated; dispositions below.
+
+- **H1' (Contract) extcontext guarded the wrong clock** — FIXED: the guard
+  compared `time.Time.Equal` (monotonic readings) while the seed is
+  wall-clock `UnixNano`, so it could silently no-op. Now tracks
+  `lastSeedAfter int64` (recorded AFTER the constructor returns — the seed
+  it read is at or below that reading), and the next copy waits until the
+  clock passes it: every copy's seed is strictly greater. Bounded wait
+  (10k ticks) so a frozen clock cannot hold the mutex forever.
+- **M1' (Security+FailureMode) later resolutions leapt the cursor past
+  unresolved messages** (failed single at N shadowed forever by resolved
+  N+1; buffered album members outrun by later singles) — FIXED with the
+  pending-unresolved set (`watch_pending.go`): intake defer pins unresolved
+  IDs (both live and catch-up modes), every resolution unpins, and ALL
+  cursor advances clamp below the smallest pending ID. Failed singles and
+  failed album flushes now truly re-fetch next boot. Pinned by
+  TestWatchIntakeClampBlocksLeapOverUnresolved + set unit tests.
+- **M2' (Security) L2 fix was a no-op on the resumable download path** —
+  `fetchChunk` re-slept refused oversized FLOOD_WAITs locally — FIXED:
+  waits above MaxAutoFloodWait fail fast with the honest cause.
+- **M3' (Security, pre-existing) album buffer unbounded growth** (timer
+  reset per grouped post = never flush under sustained posting) — FIXED:
+  64-entry cap force-flushes synchronously (addFileLocked wrapper, no
+  double-unlock) + absolute 3x-timeout deadline caps timer resets.
+  Pinned by TestWatchMediaGroupBufferCapForcesFlush + TestGroupFlushDelay.
+- **M4' (FailureMode, from H1 round) watchCatchUpCounters data race**
+  (album flush timers mutate counters from their own goroutines) — FIXED:
+  all five counters are atomic.Int64 now; `-race` green.
+- **M5' (all 3 lenses) boot budget double-counted early-return watches** —
+  FIXED structurally: runWatchCatchUpOne returns the resolved count, both
+  package globals deleted; deferred publish survives every return path.
+- **M6' (Contract) L2 reorder missed the two stream-mode inline
+  post-mortems** — FIXED; also corrects the record: the earlier "M9"
+  simplifier claim (commit 652718e) never landed — its edit script died
+  before reaching stream.go. Both tfile/stream.go and batchtfile now use
+  the shared dlutil.DownloadFailure.
+- **M7' (Contract) commit-message hygiene claims had no repo artifact** —
+  FIXED: `tool github.com/abice/go-enum` directive (go.mod) + directives
+  now `go tool go-enum` — generate is reproducible from a clean clone
+  (verified with GOPATH/bin stripped from PATH); the gofmt/settings claim
+  was a no-op (file already clean) — noted, not re-claimed.
+- Lows fixed: dir-segment invalid chars now replaced per segment (full
+  filename-sanitizer parity), join-time sanitize divergence Warns, boot
+  log wording counts resolved outcomes honestly, boot start-index rotates
+  hourly (head-watch starvation), meter SlowAbsorbed evidence appended to
+  stall labels that fire mid-floodwait (parent-cancel contract preserved —
+  TestFloodWaitMeter_ParentCancelDoesNotCrawl kept green), behavioral pin
+  for the WithMaxWait wiring (TestDefaultChainCapsFloodWaitSleep), stale
+  pre-filter test renamed + redocumented, M1 clamp/L4 tests added.
+- Accepted residuals (unchanged): chained sub-cap floodwaits can still
+  park past the watchdog (label now names the absorbed time), bot-client
+  floodwaits > 14m fast-fail instead of sleeping (benign, documented),
+  interior U+00A0/U+3000 in dir segments (Win32 does not strip them — no
+  divergence), pending set fails open beyond 4096 entries per watch.

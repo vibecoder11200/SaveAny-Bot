@@ -49,13 +49,7 @@ func executeStream(ctx context.Context, task *Task) error {
 		}
 		_, err := downloader.Stream(dlCtx, wr)
 		if err != nil {
-			if wdog.Stalled() {
-				err = fmt.Errorf("download stalled: no data received for %s", dlutil.DownloadStallTimeout)
-			} else if meter.Crawled() {
-				err = dlutil.CrawlError(meter.Absorbed())
-			} else {
-				err = fmt.Errorf("failed to download file: %w", err)
-			}
+			err = dlutil.DownloadFailure(err, wdog, meter)
 			logger.Errorf("%v", err)
 			pw.CloseWithError(err)
 		}

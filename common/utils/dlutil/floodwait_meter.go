@@ -85,6 +85,11 @@ func newFloodWaitMeter(ctx context.Context, cancel context.CancelFunc, window, t
 		for {
 			select {
 			case <-ctx.Done():
+				// A cancel (meter's own, watchdog, parent shutdown) is NOT
+				// by itself a crawl verdict — pinned by
+				// TestFloodWaitMeter_ParentCancelDoesNotCrawl. The
+				// cancel-with-absorption case is surfaced honestly via
+				// SlowAbsorbed at DownloadFailure time instead.
 				return
 			case <-ticker.C:
 				if m.slowNanos.Load() >= int64(m.maxSlow) {
@@ -124,6 +129,20 @@ func (m *FloodWaitMeter) Absorbed() time.Duration {
 		return 0
 	}
 	return time.Duration(m.slowNanos.Load())
+}
+
+// SlowAbsorbed returns the flood-wait time absorbed in the current window
+// when it already reached the crawl threshold, and zero otherwise. It is
+// the honest-evidence companion for a stall verdict that fired while the
+// download was parked on flood waits (the window tick may not have fired
+// before the cancel): the label stays "stalled" but names the likely
+// cause. Crawled stays authoritative for the meter's own verdict.
+func (m *FloodWaitMeter) SlowAbsorbed() time.Duration {
+	nanos := m.slowNanos.Load()
+	if nanos < int64(m.maxSlow) {
+		return 0
+	}
+	return time.Duration(nanos)
 }
 
 // Close releases the meter goroutine. Canceling after a finished download
