@@ -1,7 +1,19 @@
 package config
 
+import (
+	"fmt"
+	"net/url"
+	"strings"
+)
+
 // DefaultYtdlpFilenameTemplate is used when ytdlp.filename_template is not set.
-const DefaultYtdlpFilenameTemplate = "%(title)s.%(ext)s"
+// The title is capped at 200 bytes so names stay under the 255-byte NAME_MAX
+// limit, with room for suffixes such as ".f140.m4a.part".
+const DefaultYtdlpFilenameTemplate = "%(title).200B.%(ext)s"
+
+// LegacyYtdlpFilenameTemplate is the uncapped default still stored by configs
+// created before the title cap; it is treated as unset when settings load.
+const LegacyYtdlpFilenameTemplate = "%(title)s.%(ext)s"
 
 type YtdlpConfig struct {
 	// MaxHeight limits the video resolution by height in pixels (e.g. 1080, 720).
@@ -19,4 +31,33 @@ type YtdlpConfig struct {
 	// RestrictFilenames keeps file names ASCII-only (yt-dlp --restrict-filenames),
 	// dropping non-latin characters from titles. Disabled by default.
 	RestrictFilenames bool `toml:"restrict_filenames" mapstructure:"restrict_filenames" json:"restrict_filenames"`
+	// Proxies are HTTP/HTTPS/SOCKS proxy URLs for yt-dlp's own requests. They
+	// are tried in order until one succeeds, so put the preferred proxy first.
+	// Empty means yt-dlp connects directly.
+	Proxies []string `toml:"proxies" mapstructure:"proxies" json:"proxies"`
+}
+
+// ValidateProxies reports the first entry in Proxies that yt-dlp cannot use.
+// Blank entries are ignored. Errors never echo the entry, since it may contain
+// a password.
+func (c YtdlpConfig) ValidateProxies() error {
+	for i, raw := range c.Proxies {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			return fmt.Errorf("invalid yt-dlp proxy %d: malformed URL", i+1)
+		}
+		switch u.Scheme {
+		case "http", "https", "socks4", "socks4a", "socks5", "socks5h":
+		default:
+			return fmt.Errorf("invalid yt-dlp proxy %d: scheme %q must be http, https, socks4, socks4a, socks5 or socks5h", i+1, u.Scheme)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("invalid yt-dlp proxy %d: missing host", i+1)
+		}
+	}
+	return nil
 }

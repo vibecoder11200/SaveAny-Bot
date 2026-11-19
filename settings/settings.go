@@ -111,6 +111,9 @@ func groupValue(cfg config.Config, group string) (any, error) {
 	case GroupTemp:
 		return cfg.Temp, nil
 	case GroupYtdlp:
+		if cfg.Ytdlp.Proxies == nil {
+			cfg.Ytdlp.Proxies = []string{}
+		}
 		return cfg.Ytdlp, nil
 	case GroupParser:
 		return cfg.Parser, nil
@@ -173,7 +176,14 @@ func applyGroup(cfg *config.Config, group string, raw []byte) error {
 	case GroupTemp:
 		return json.Unmarshal(raw, &cfg.Temp)
 	case GroupYtdlp:
-		return json.Unmarshal(raw, &cfg.Ytdlp)
+		if err := json.Unmarshal(raw, &cfg.Ytdlp); err != nil {
+			return err
+		}
+		// Configs written before the title cap still carry the old default.
+		if cfg.Ytdlp.FilenameTemplate == config.LegacyYtdlpFilenameTemplate {
+			cfg.Ytdlp.FilenameTemplate = config.DefaultYtdlpFilenameTemplate
+		}
+		return nil
 	case GroupParser:
 		// The group payload is complete; reset the map so decoding cannot
 		// mutate the map still referenced by the live config snapshot.
@@ -508,6 +518,10 @@ func validateGroup(cfg *config.Config, group string) error {
 	case GroupLog:
 		if _, err := log.ParseLevel(strings.TrimSpace(cfg.Log.Level)); err != nil {
 			return fmt.Errorf("invalid log level: %w", err)
+		}
+	case GroupYtdlp:
+		if err := cfg.Ytdlp.ValidateProxies(); err != nil {
+			return err
 		}
 	case GroupWeb:
 		if _, _, err := net.SplitHostPort(cfg.Web.Listen); err != nil {

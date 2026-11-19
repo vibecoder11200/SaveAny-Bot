@@ -3,7 +3,6 @@ package database
 import (
 	"net/url"
 	"path/filepath"
-	"strings"
 
 	"gorm.io/gorm"
 )
@@ -17,14 +16,10 @@ func OpenReadOnly(path string) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A Windows drive path must be represented as file:///D:/...; without
-	// the leading slash net/url emits file://D:/..., which SQLite treats as
-	// a UNC path on host "D:".
-	slash := filepath.ToSlash(absolute)
-	if filepath.VolumeName(absolute) != "" && !strings.HasPrefix(slash, "/") {
-		slash = "/" + slash
-	}
-	dsn := (&url.URL{Scheme: "file", Path: slash, RawQuery: url.Values{"mode": {"ro"}}.Encode()}).String()
+	// Same DSN form as dsnWithPragmas: file:C:/path preserves the native
+	// Windows drive path (file:///C:/ leaves SQLite seeing a POSIX /C: and
+	// file://C:/ a UNC host).
+	dsn := sqliteFileDSN(filepath.ToSlash(absolute)) + "?" + url.Values{"mode": {"ro"}}.Encode()
 	return gorm.Open(openDialector(dsn), &gorm.Config{})
 }
 
@@ -84,10 +79,6 @@ func Open(path string) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	slash := filepath.ToSlash(absolute)
-	if filepath.VolumeName(absolute) != "" && !strings.HasPrefix(slash, "/") {
-		slash = "/" + slash
-	}
-	dsn := (&url.URL{Scheme: "file", Path: slash}).String()
+	dsn := sqliteFileDSN(filepath.ToSlash(absolute))
 	return gorm.Open(openDialector(dsn), &gorm.Config{})
 }

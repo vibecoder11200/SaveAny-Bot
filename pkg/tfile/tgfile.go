@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/tg"
+	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
 	"github.com/krau/mygotg/functions"
 )
 
@@ -203,6 +205,9 @@ func buildFromMedia(media tg.MessageMediaClass, client downloader.Client, msg *t
 				fileName = name.GetFileName()
 				break
 			}
+		}
+		if fileName = strings.TrimSpace(fileName); fileName != "" {
+			fileName = fsutil.SafeBaseName(fileName)
 		}
 		return newTGFile(
 			location,
